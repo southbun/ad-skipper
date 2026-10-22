@@ -43,11 +43,11 @@ class OcrDetector {
                             )
                         }
                     }
-                    cont.resume(lines)
+                    if (cont.isActive) cont.resume(lines)
                 }
                 .addOnFailureListener { e ->
                     Timber.w(e, "OCR failed")
-                    cont.resume(emptyList())
+                    if (cont.isActive) cont.resume(emptyList())
                 }
         }
     }

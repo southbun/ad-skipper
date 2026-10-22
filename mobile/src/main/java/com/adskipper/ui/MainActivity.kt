@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -26,21 +25,18 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.adskipper.ui.home.HomeScreen
-import com.adskipper.ui.model.ModelScreen
 import com.adskipper.ui.settings.SettingsScreen
 import com.adskipper.ui.stats.StatsScreen
 
 object Routes {
     const val HOME = "home"
     const val SETTINGS = "settings"
-    const val MODELS = "models"
     const val STATS = "stats"
 }
 
 private val tabs = listOf(
     Triple(Routes.HOME, "首页", Icons.Filled.Home),
     Triple(Routes.SETTINGS, "设置", Icons.Filled.Settings),
-    Triple(Routes.MODELS, "模型", Icons.Filled.Memory),
     Triple(Routes.STATS, "统计", Icons.Filled.BarChart),
 )
 
@@ -89,7 +85,6 @@ private fun AppNavHost() {
         ) {
             composable(Routes.HOME) { HomeScreen() }
             composable(Routes.SETTINGS) { SettingsScreen() }
-            composable(Routes.MODELS) { ModelScreen() }
             composable(Routes.STATS) { StatsScreen() }
         }
     }

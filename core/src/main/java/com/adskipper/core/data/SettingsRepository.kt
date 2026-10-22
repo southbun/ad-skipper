@@ -5,14 +5,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.intPreferencesKey
-import androidx.datastore.preferences.core.longPreferencesKey
-import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
-import timber.log.Timber
 
 private val Context.dataStore by preferencesDataStore(name = "settings")
 
@@ -20,98 +16,56 @@ data class AppSettings(
     val masterEnabled: Boolean = true,
     val layer1Enabled: Boolean = true,
     val layer2Enabled: Boolean = true,
-    // L3 needs a downloaded model (InternVL3-2B recommended); until one is
-    // present the layer is skipped by the engine-not-ready check.
-    val layer3Enabled: Boolean = true,
+    val layer3Enabled: Boolean = false,
     val keywords: Set<String> = DEFAULT_KEYWORDS,
     val whitelist: Set<String> = DEFAULT_WHITELIST,
-    val vlmThreads: Int = 4,
-    // 896px input quadruples image tokens vs the old 448px; leave headroom.
-    val vlmTimeoutMs: Long = 8000L,
     val debugOverlay: Boolean = false,
-    // Allow the service to act on our own package (fake-ad test screen).
     val selfTest: Boolean = false,
-    val activeModelId: String? = null,
 ) {
     companion object {
-        val DEFAULT_KEYWORDS = setOf("跳过", "Skip", "关闭广告", "跳过广告", "skip_ad")
-
-        /** System UI often contains "Skip" labels (setup wizard etc.) — tapping
-         *  those is almost never what the user wants. */
-        /** System surfaces and common launchers: splash ads never appear
-         *  there, and image-based L3 detectors must not tap around on them. */
+        val DEFAULT_KEYWORDS = setOf("跳过", "Skip", "Skip Ad", "关闭广告", "跳过广告", "skip_ad")
         val DEFAULT_WHITELIST = setOf(
-            "com.android.systemui",
-            "com.android.settings",
-            "com.android.launcher3",
-            "com.google.android.apps.nexuslauncher",
-            "com.miui.home",
-            "com.huawei.android.launcher",
-            "com.oppo.launcher",
-            "com.vivo.launcher",
-            "com.sec.android.app.launcher",
-            "net.oneplus.launcher",
+            "com.android.systemui", "com.android.settings", "com.android.launcher3",
+            "com.google.android.apps.nexuslauncher", "com.miui.home", "com.huawei.android.launcher",
+            "com.oppo.launcher", "com.vivo.launcher", "com.sec.android.app.launcher", "net.oneplus.launcher",
         )
     }
 }
 
 class SettingsRepository(private val context: Context) {
-
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
         AppSettings(
             masterEnabled = p[KEY_MASTER] ?: true,
             layer1Enabled = p[KEY_L1] ?: true,
             layer2Enabled = p[KEY_L2] ?: true,
-            layer3Enabled = p[KEY_L3] ?: true,
+            layer3Enabled = p[KEY_L3] ?: false,
             keywords = p[KEY_KEYWORDS] ?: AppSettings.DEFAULT_KEYWORDS,
             whitelist = p[KEY_WHITELIST] ?: AppSettings.DEFAULT_WHITELIST,
-            vlmThreads = p[KEY_VLM_THREADS] ?: 4,
-            vlmTimeoutMs = p[KEY_VLM_TIMEOUT] ?: 4000L,
-            debugOverlay = p[KEY_DEBUG_OVERLAY] ?: false,
+            debugOverlay = p[KEY_DEBUG] ?: false,
             selfTest = p[KEY_SELF_TEST] ?: false,
-            activeModelId = p[KEY_ACTIVE_MODEL]?.takeIf { it.isNotBlank() },
         )
     }
 
-    suspend fun setMasterEnabled(v: Boolean) = edit { it[KEY_MASTER] = v }
-    suspend fun setLayer1Enabled(v: Boolean) = edit { it[KEY_L1] = v }
-    suspend fun setLayer2Enabled(v: Boolean) = edit { it[KEY_L2] = v }
-    suspend fun setLayer3Enabled(v: Boolean) = edit { it[KEY_L3] = v }
-    suspend fun setKeywords(v: Set<String>) = edit { it[KEY_KEYWORDS] = v }
-    suspend fun setWhitelist(v: Set<String>) = edit { it[KEY_WHITELIST] = v }
-    suspend fun setVlmThreads(v: Int) = edit { it[KEY_VLM_THREADS] = v }
-    suspend fun setVlmTimeoutMs(v: Long) = edit { it[KEY_VLM_TIMEOUT] = v }
-    suspend fun setDebugOverlay(v: Boolean) = edit { it[KEY_DEBUG_OVERLAY] = v }
-    suspend fun setSelfTest(v: Boolean) = edit { it[KEY_SELF_TEST] = v }
-    suspend fun setActiveModelId(v: String?) = edit { it[KEY_ACTIVE_MODEL] = v ?: "" }
+    suspend fun setMasterEnabled(v: Boolean) { context.dataStore.edit { it[KEY_MASTER] = v } }
+    suspend fun setLayer1Enabled(v: Boolean) { context.dataStore.edit { it[KEY_L1] = v } }
+    suspend fun setLayer2Enabled(v: Boolean) { context.dataStore.edit { it[KEY_L2] = v } }
+    suspend fun setLayer3Enabled(v: Boolean) { context.dataStore.edit { it[KEY_L3] = v } }
+    suspend fun setKeywords(v: Set<String>) { context.dataStore.edit { it[KEY_KEYWORDS] = v } }
+    suspend fun setWhitelist(v: Set<String>) { context.dataStore.edit { it[KEY_WHITELIST] = v } }
+    suspend fun setDebugOverlay(v: Boolean) { context.dataStore.edit { it[KEY_DEBUG] = v } }
+    suspend fun setSelfTest(v: Boolean) { context.dataStore.edit { it[KEY_SELF_TEST] = v } }
 
-    /** One-time (first start): resolve the device's default home/launcher app
-     *  and add it to the persisted whitelist, so it shows up checked in the
-     *  settings UI. Guarded by a flag so unchecking it later sticks. */
+    @Suppress("DEPRECATION")
     suspend fun seedDefaultLauncher() {
-        val home = try {
-            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-            context.packageManager.resolveActivity(
-                intent,
-                PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong()),
-            )?.activityInfo?.packageName
-                ?.takeIf { it != "android" } // "android" = no default set (resolver)
-        } catch (t: Throwable) {
-            Timber.e(t, "resolving default launcher failed")
-            null
-        }
-        edit { p ->
-            if (p[KEY_LAUNCHER_SEEDED] == true) return@edit
-            if (home != null) {
+        val home = context.packageManager.resolveActivity(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), PackageManager.MATCH_DEFAULT_ONLY,
+        )?.activityInfo?.packageName?.takeIf { it != "android" } ?: return
+        context.dataStore.edit { p ->
+            if (p[KEY_LAUNCHER_SEEDED] != true) {
                 p[KEY_WHITELIST] = (p[KEY_WHITELIST] ?: AppSettings.DEFAULT_WHITELIST) + home
-                Timber.i("whitelisted default launcher: %s", home)
+                p[KEY_LAUNCHER_SEEDED] = true
             }
-            p[KEY_LAUNCHER_SEEDED] = true
         }
-    }
-
-    private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
-        context.dataStore.edit(block)
     }
 
     private companion object {
@@ -121,11 +75,8 @@ class SettingsRepository(private val context: Context) {
         val KEY_L3 = booleanPreferencesKey("layer3_enabled")
         val KEY_KEYWORDS = stringSetPreferencesKey("keywords")
         val KEY_WHITELIST = stringSetPreferencesKey("whitelist")
-        val KEY_VLM_THREADS = intPreferencesKey("vlm_threads")
-        val KEY_VLM_TIMEOUT = longPreferencesKey("vlm_timeout_ms")
-        val KEY_DEBUG_OVERLAY = booleanPreferencesKey("debug_overlay")
+        val KEY_DEBUG = booleanPreferencesKey("debug_overlay")
         val KEY_SELF_TEST = booleanPreferencesKey("self_test")
-        val KEY_ACTIVE_MODEL = stringPreferencesKey("active_model_id")
         val KEY_LAUNCHER_SEEDED = booleanPreferencesKey("launcher_seeded")
     }
 }

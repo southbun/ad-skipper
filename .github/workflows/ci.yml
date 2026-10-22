@@ -4,90 +4,95 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Unit tests
+  verify:
+    name: Test and build offline APK
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
-
       - uses: gradle/actions/setup-gradle@v4
-
-      - name: Run unit tests
-        run: ./gradlew :core:testDebugUnitTest
-
-  build:
-    name: Assemble debug APK
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - uses: gradle/actions/setup-gradle@v4
-
-      # Vendored at build time, gitignored (see README 构建).
-      - name: Fetch llama.cpp
-        run: git clone --depth 1 https://github.com/ggml-org/llama.cpp.git core/src/main/cpp/llama.cpp
-
-      - name: Fetch ncnn prebuilt libs
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Fetch pinned ncnn library
         run: |
-          gh release download 20260526 -R Tencent/ncnn -p ncnn-20260526-android-vulkan.zip
-          unzip -q ncnn-20260526-android-vulkan.zip
+          curl --fail --location --retry 3 --output ncnn.zip 'https://github.com/Tencent/ncnn/releases/download/20260526/ncnn-20260526-android-vulkan.zip'
+          echo '26909c92eed35afed4a966b5e9e503fcb0a529691ea3f910ec2c94a4fff52804  ncnn.zip' | sha256sum --check
+          unzip -q ncnn.zip
           mv ncnn-20260526-android-vulkan core/src/main/cpp/ncnn
-
-      # ggml-vulkan needs host Vulkan-Headers (vulkan.hpp) and the
-      # SPIRV-Headers cmake package; install both under /usr/local where the
-      # project CMakeLists already looks. glslc comes from the NDK.
-      - name: Install Vulkan headers
+      - name: Unit tests and Android lint
+        run: ./gradlew :core:testDebugUnitTest :mobile:lintDebug --stacktrace
+      - name: Configure optional personal signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git /tmp/vulkan-headers
-          cmake -S /tmp/vulkan-headers -B /tmp/vulkan-headers/build
-          sudo cmake --install /tmp/vulkan-headers/build --prefix /usr/local
-          git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git /tmp/spirv-headers
-          cmake -S /tmp/spirv-headers -B /tmp/spirv-headers/build
-          sudo cmake --install /tmp/spirv-headers/build --prefix /usr/local
-
-      # The llama.cpp/ggml C++ build dominates the job; ccache turns repeat
-      # builds into cache hits. CMake picks the launcher up from the
-      # CMAKE_*_COMPILER_LAUNCHER environment variables at configure time.
-      - name: Set up ccache
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/personal.p12"
+            export PERSONAL_KEYSTORE_PATH="$RUNNER_TEMP/personal.p12"
+            python3 - <<'PY'
+          import os
+          def prop(value):
+              return value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+          pairs = {
+              "KEYSTORE_PATH": os.environ["PERSONAL_KEYSTORE_PATH"],
+              "KEYSTORE_PASSWORD": os.environ["STORE_PASSWORD"],
+              "KEY_ALIAS": os.environ["KEY_ALIAS"],
+              "KEY_PASSWORD": os.environ["KEY_PASSWORD"],
+          }
+          with open("local.properties", "w") as output:
+              output.write("\n".join(k + "=" + prop(v) for k, v in pairs.items()) + "\n")
+          PY
+            echo "APK_VARIANT=release" >> "$GITHUB_ENV"
+          else
+            echo "APK_VARIANT=debug" >> "$GITHUB_ENV"
+          fi
+      - name: Build APK
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q ccache
-          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "$GITHUB_ENV"
-          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "$GITHUB_ENV"
-          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
-
-      - uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
-
-      - name: Assemble debug APK
-        run: ./gradlew :mobile:assembleDebug
-
-      - name: ccache stats
-        run: ccache --show-stats
-
+          if [ "$APK_VARIANT" = release ]; then
+            ./gradlew :mobile:assembleRelease --stacktrace
+          else
+            ./gradlew :mobile:assembleDebug --stacktrace
+          fi
+      - name: Verify final permissions and signature
+        run: |
+          APK=$(find mobile/build/outputs/apk -name '*.apk' -print -quit)
+          mkdir -p dist
+          cp "$APK" "dist/ad-skipper-selfuse-$APK_VARIANT.apk"
+          ANALYZER="$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
+          "$ANALYZER" manifest permissions "$APK" > dist/permissions.txt
+          "$ANALYZER" manifest print "$APK" > dist/manifest.xml
+          if grep -Eq 'android.permission.(INTERNET|ACCESS_NETWORK_STATE|USE_EXACT_ALARM|READ_CONTACTS|READ_SMS|REQUEST_INSTALL_PACKAGES)' dist/permissions.txt; then
+            echo "Unexpected sensitive permission"; exit 1
+          fi
+          grep -q 'android:allowBackup="false"' dist/manifest.xml
+          SIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -print | sort -r | head -1)
+          "$SIGNER" verify --verbose --print-certs "$APK" > dist/signature.txt
+          (cd dist && sha256sum *.apk > SHA256SUMS.txt)
       - uses: actions/upload-artifact@v4
+        if: success()
         with:
-          name: mobile-debug-apk
-          path: mobile/build/outputs/apk/debug/mobile-debug.apk
+          name: ad-skipper-selfuse
+          path: dist/
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-reports
+          path: |
+            core/build/test-results/
+            mobile/build/reports/lint-results-debug.*
+          retention-days: 14

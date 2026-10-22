@@ -48,7 +48,7 @@ fun StatsScreen() {
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("累计跳过：$total 次", style = MaterialTheme.typography.titleMedium)
+                Text("已完成点击：$total 次", style = MaterialTheme.typography.titleMedium)
             }
         }
 

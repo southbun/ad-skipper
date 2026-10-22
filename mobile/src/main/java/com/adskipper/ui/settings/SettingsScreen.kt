@@ -58,13 +58,13 @@ fun SettingsScreen() {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("检测层级", style = MaterialTheme.typography.titleMedium)
-                SettingSwitch("L1 界面节点匹配（<10ms）", settings.layer1Enabled) {
+                SettingSwitch("文字按钮识别", settings.layer1Enabled) {
                     scope.launch { app.settingsRepo.setLayer1Enabled(it) }
                 }
-                SettingSwitch("L2 本地 OCR（~100ms）", settings.layer2Enabled) {
+                SettingSwitch("图片文字识别", settings.layer2Enabled) {
                     scope.launch { app.settingsRepo.setLayer2Enabled(it) }
                 }
-                SettingSwitch("L3 本地视觉检测（内置检测器 + 可选下载大模型）", settings.layer3Enabled) {
+                SettingSwitch("无文字按钮识别（实验）", settings.layer3Enabled) {
                     scope.launch { app.settingsRepo.setLayer3Enabled(it) }
                 }
             }
@@ -113,7 +113,7 @@ fun SettingsScreen() {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("其他", style = MaterialTheme.typography.titleMedium)
-                SettingSwitch("调试悬浮窗（命中时显示层级与坐标）", settings.debugOverlay) {
+                SettingSwitch("显示点击状态", settings.debugOverlay) {
                     scope.launch { app.settingsRepo.setDebugOverlay(it) }
                 }
                 SettingSwitch("自测模式（对本 App 生效，用于模拟广告测试）", settings.selfTest) {
@@ -155,7 +155,7 @@ private fun WhitelistPicker(whitelist: Set<String>, onChange: (Set<String>) -> U
         value = withContext(Dispatchers.IO) {
             val pm = context.packageManager
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-            pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(0))
+            pm.queryIntentActivities(intent, 0)
                 .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
                 .distinctBy { it.first }
                 .sortedBy { it.second }

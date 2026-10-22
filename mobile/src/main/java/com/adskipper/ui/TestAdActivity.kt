@@ -43,6 +43,13 @@ class TestAdActivity : ComponentActivity() {
         lp.topMargin = 64
         lp.marginEnd = 32
         root.addView(skip, lp)
+        root.addView(TextView(this).apply {
+            text = "广告"
+            textSize = 16f
+            setTextColor(0xFFFFFFFF.toInt())
+        }, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.START).apply { topMargin = 64; marginStart = 32 })
         setContentView(root)
 
         timer = object : CountDownTimer(30000, 1000) {

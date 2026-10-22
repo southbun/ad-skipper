@@ -170,7 +170,7 @@ class YoloSkipDetector(private val context: Context) {
         const val BIN_ASSET = "yolo.ncnn.bin"
         const val IN_SIZE = 640
         const val ANCHORS = 8400
-        const val CONF_THRESHOLD = 0.55f
+        const val CONF_THRESHOLD = 0.75f
 
         /** Bottom-center strip where splash branding (logo/slogan) lives;
          *  YOLO hits centered here are rejected as false positives. */

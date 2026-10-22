@@ -10,16 +10,13 @@ android {
     namespace = "com.adskipper"
 
     defaultConfig {
-        applicationId = "com.tangzixiang.adskipper"
+        applicationId = "com.southbun.adskipper"
     }
 
     buildFeatures.compose = true
 
-    // GGUF/TFLite assets must stay uncompressed so AssetManager.openFd works
-    // (noCompress in a library module does not propagate to packaging).
     aaptOptions {
-        noCompress += "gguf"
-        noCompress += "tflite"
+        noCompress += listOf("bin", "param")
     }
 }
 
