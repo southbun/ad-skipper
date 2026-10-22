@@ -1,0 +1,94 @@
+package com.adskipper.core.service
+
+import android.os.SystemClock
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import com.adskipper.core.data.AppSettings
+import com.adskipper.core.detect.SplashSessionTracker
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
+import org.junit.After
+import org.junit.Assert.*
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+import org.robolectric.util.ReflectionHelpers
+
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [30, 35], manifest = Config.NONE)
+class AdSkipperServiceForegroundTest {
+    private val dispatcher = StandardTestDispatcher()
+    private lateinit var service: AdSkipperService
+    private lateinit var sessions: SplashSessionTracker
+    private val app = "test.ad.app"
+    private val home = "com.miui.home"
+
+    @Before fun setup() {
+        Dispatchers.setMain(dispatcher)
+        service = Robolectric.buildService(AdSkipperService::class.java).create().get()
+        ReflectionHelpers.setField(service, "settings", AppSettings())
+        ReflectionHelpers.setField(service, "overlay", DebugOverlay(service))
+        sessions = ReflectionHelpers.getField(service, "sessions")
+    }
+
+    @After fun cleanup() {
+        ReflectionHelpers.getField<CoroutineScope>(service, "scope").cancel()
+        dispatcher.scheduler.runCurrent()
+        Dispatchers.resetMain()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun send(rootPackage: String?, eventPackage: String?, type: Int = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+        val root = rootPackage?.let { pkg -> AccessibilityNodeInfo.obtain().apply { packageName = pkg } }
+        shadowOf(service).setRootInActiveWindow(root)
+        service.onAccessibilityEvent(AccessibilityEvent.obtain(type).apply { packageName = eventPackage })
+    }
+
+    private fun current() = sessions.observeForeground(app, true, SystemClock.elapsedRealtime())
+
+    @Test fun appCanRunAgainAfterLauncherEventWithNoReadableRoot() {
+        send(app, app)
+        val first = current()!!
+        sessions.finish(first)
+        send(null, home)
+        send(app, app)
+        val second = current()
+        assertNotNull("Returning from the launcher must create a fresh recognition session", second)
+        assertNotEquals(first.id, second!!.id)
+        assertEquals(second.id, ReflectionHelpers.getField<Long?>(service, "pollingId"))
+    }
+
+    @Test fun temporarilyUnreadableContentDoesNotPermanentlyDisableTheCurrentSession() {
+        send(app, app)
+        val first = current()!!
+        send(null, app, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        send(app, app, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        assertEquals(first, current())
+    }
+
+    @Test fun readableLauncherStillAllowsAnotherVisit() {
+        send(app, app)
+        val first = current()!!
+        sessions.finish(first)
+        send(home, home)
+        send(app, app)
+        assertNotEquals(first.id, current()!!.id)
+    }
+
+    @Test fun contentEventsWithoutARootCannotRenewAConsumedSession() {
+        send(app, app)
+        sessions.finish(current()!!)
+        send(null, home, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        send(app, app)
+        assertNull(current())
+    }
+}
