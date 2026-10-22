@@ -77,7 +77,8 @@ class ModelManager(context: Context) {
 
     fun cancelDownload() {
         job?.cancel()
-        connection?.disconnect()
+        val pending = connection
+        scope.launch { pending?.disconnect() }
     }
 
     suspend fun loadModel(): Boolean {

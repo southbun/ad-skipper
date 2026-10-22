@@ -34,6 +34,13 @@ class FrameVerifierTest {
         assertFalse(FrameVerifier.matches(before, after, target))
     }
 
+    @Test fun aNewPageWithTheSameColoredCornerStillRejectsTheOldCoordinates() {
+        val before = frame(Color.WHITE)
+        val after = frame(Color.BLACK)
+        for (y in 0 until 400) for (x in 750 until 1080) after.setPixel(x, y, Color.WHITE)
+        assertFalse(FrameVerifier.matches(before, after, target))
+    }
+
     @Test fun nonFiniteOrOutOfBoundsCoordinatesAreRejected() {
         val image = frame(Color.WHITE)
         assertFalse(FrameVerifier.matches(image, image, target.copy(x = Float.NaN)))

@@ -51,11 +51,15 @@ class YoloSkipDetector(private val context: Context) {
         if (!isReady) return null
         // A timed-out native task may still run; it must own its pixels.
         val owned = bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+        var submitted = false
         return try {
-            executor.submit(Callable {
+            val task = executor.submit(Callable {
                 try { detect(owned) } finally { owned.recycle() }
-            }).get(2, TimeUnit.SECONDS)
+            })
+            submitted = true
+            task.get(2, TimeUnit.SECONDS)
         } catch (t: Throwable) {
+            if (!submitted) owned.recycle()
             Timber.e(t, "YOLO detection failed")
             null
         }

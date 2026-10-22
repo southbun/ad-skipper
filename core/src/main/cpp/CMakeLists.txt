@@ -3,6 +3,8 @@ project(yolo_jni CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_C_FLAGS_DEBUG "-O2 -g")
+set(CMAKE_CXX_FLAGS_DEBUG "-O2 -g")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
 
 # CI supplies a hash-verified llama.cpp d6cf0b288 archive and Vulkan headers.
@@ -42,6 +44,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE NEVER)
 set(GGML_VULKAN_SHADERS_GEN_TOOLCHAIN ${CMAKE_BINARY_DIR}/vk-host-toolchain.cmake CACHE FILEPATH "" FORCE)
 add_subdirectory(${LLAMA_SRC} ${CMAKE_CURRENT_BINARY_DIR}/llama.cpp)
 # This pinned version predates LLAMA_BUILD_MTMD; request its library explicitly.
+set(LLAMA_INSTALL_VERSION 0.0.0)
 add_subdirectory(${LLAMA_SRC}/tools/mtmd ${CMAKE_CURRENT_BINARY_DIR}/mtmd EXCLUDE_FROM_ALL)
 add_library(vlm_jni SHARED vlm_jni.cpp)
 target_include_directories(vlm_jni PRIVATE
