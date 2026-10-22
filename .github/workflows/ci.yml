@@ -32,7 +32,7 @@ jobs:
           unzip -q ncnn.zip
           mv ncnn-20260526-android-vulkan core/src/main/cpp/ncnn
       - name: Unit tests and Android lint
-        run: ./gradlew :core:testDebugUnitTest :mobile:lintDebug --stacktrace
+        run: ./gradlew :core:testDebugUnitTest :mobile:testDebugUnitTest :mobile:lintDebug --stacktrace
       - name: Configure optional personal signing
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -94,5 +94,6 @@ jobs:
           name: validation-reports
           path: |
             core/build/test-results/
+            mobile/build/test-results/
             mobile/build/reports/lint-results-debug.*
           retention-days: 14

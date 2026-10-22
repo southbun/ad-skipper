@@ -14,6 +14,7 @@ android {
     }
 
     buildFeatures.compose = true
+    testOptions.unitTests.isIncludeAndroidResources = true
 
     aaptOptions {
         noCompress += listOf("bin", "param")
@@ -34,4 +35,6 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
 
     implementation(libs.coil.compose)
+    testImplementation(libs.junit)
+    testImplementation("org.robolectric:robolectric:4.16.1")
 }
