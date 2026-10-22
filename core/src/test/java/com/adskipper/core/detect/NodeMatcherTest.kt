@@ -82,4 +82,25 @@ class NodeMatcherTest {
         shadowOf(button).addChild(node(labelBox, "跳过"))
         assertNull(NodeMatcher.findSkipNodeInfo(root, keywords))
     }
+
+    @Test fun clickableScreenCannotBeUsedAsASkipButton() {
+        val root = node(screen, clickable = true)
+        shadowOf(root).addChild(node(labelBox, "跳过"))
+        assertNull(NodeMatcher.findSkipNodeInfo(root, keywords))
+    }
+
+    @Test fun plainTextWithoutClickableParentKeepsCoordinateFallback() {
+        val root = node(screen)
+        shadowOf(root).addChild(node(labelBox, "跳过"))
+        assertEquals(labelBox, NodeMatcher.findSkipNode(root, keywords))
+    }
+
+    @Test fun buttonCanBeDetectedAfterItBecomesEnabled() {
+        val root = node(screen)
+        val button = node(buttonBox, "跳过", clickable = true, enabled = false)
+        shadowOf(root).addChild(button)
+        assertNull(NodeMatcher.findSkipNode(root, keywords))
+        button.isEnabled = true
+        assertEquals(buttonBox, NodeMatcher.findSkipNode(root, keywords))
+    }
 }

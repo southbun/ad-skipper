@@ -53,7 +53,7 @@ object NodeMatcher {
                 return current.takeIf { safeBounds(it, screen)?.contains(label) == true }
             }
             val parent = current.parent ?: return node
-            if (parent == root) return node.takeIf { parent.isEnabled }
+            if (parent == root) return node.takeIf { parent.isEnabled && !parent.isClickable }
             current = parent
         }
         return null
