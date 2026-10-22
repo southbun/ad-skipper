@@ -75,4 +75,13 @@ class DetectionPipelineTest {
         )
         assertNull(pipeline.detect(null, { Unit }, AppSettings()).target)
     }
+
+    @Test fun explicitSkipCountdownWithoutAdBadgeProducesCandidate() = runTest {
+        val lines = listOf(OcrLine("跳过 2", 1005, 181, 200, 75))
+        val pipeline = DetectionPipeline<Unit>(
+            l1 = { _, _ -> null },
+            l2 = { _, _ -> DetectionPipeline.OcrPass(1005f to 181f, lines) }, clock = { 0L },
+        )
+        assertNotNull(pipeline.detect(null, { Unit }, AppSettings()).target)
+    }
 }
