@@ -3,12 +3,14 @@ package com.adskipper.core.detect
 import android.graphics.Bitmap
 import android.view.accessibility.AccessibilityNodeInfo
 import com.adskipper.core.data.AppSettings
+import kotlinx.coroutines.CancellationException
 
 /** OCR countdown candidates require a same-window countdown decrease before clicking. */
 class DetectionPipeline<I>(
     private val l1: suspend (AccessibilityNodeInfo?, Collection<String>) -> Pair<Float, Float>?,
     private val l2: suspend (I, Collection<String>) -> OcrPass,
     private val l3yolo: suspend (I) -> Pair<Float, Float>? = { null },
+    private val l3vlm: suspend (I, Long) -> Pair<Float, Float>? = { _, _ -> null },
     private val clock: () -> Long = { android.os.SystemClock.elapsedRealtime() },
 ) {
     data class OcrPass(val hit: Pair<Float, Float>?, val lines: List<OcrLine> = emptyList(),
@@ -21,27 +23,35 @@ class DetectionPipeline<I>(
         }
     }
     data class Result(val target: SkipTarget?, val timings: List<Pair<SkipLayer, Long>>,
-                      val missReason: String = "未找到符合条件的跳过按钮")
+                      val missReason: String = "δ�ҵ�����������������ť")
 
     suspend fun detect(
         root: AccessibilityNodeInfo?,
         screenshot: suspend () -> I?,
         settings: AppSettings,
         nodeAdEvidence: Boolean = false,
+        timeBudgetMs: Long = 8_000L,
     ): Result {
-        val timings = ArrayList<Pair<SkipLayer, Long>>(3)
+        val passStarted = clock()
+        val timings = ArrayList<Pair<SkipLayer, Long>>(4)
         if (settings.layer1Enabled && nodeAdEvidence) {
             val started = clock()
             val hit = l1(root, settings.keywords)
             timings += SkipLayer.L1_NODE to (clock() - started)
             if (hit != null) return Result(SkipTarget(hit.first, hit.second, SkipLayer.L1_NODE), timings)
         }
-        if (!settings.layer2Enabled && !settings.layer3Enabled) return Result(null, timings)
-        val image = screenshot() ?: return Result(null, timings, "无法读取画面，已保留控件识别")
+        if (!settings.layer2Enabled && !settings.layer3Enabled && !settings.vlmEnabled) return Result(null, timings)
+        val image = screenshot() ?: return Result(null, timings, "�޷���ȡ���棬�ѱ����ؼ�ʶ��")
         var adEvidence = nodeAdEvidence
         if (settings.layer2Enabled) {
             val started = clock()
-            val pass = l2(image, settings.keywords)
+            val pass = try {
+                l2(image, settings.keywords)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                OcrPass(null)
+            }
             adEvidence = adEvidence || pass.lines.any { KeywordMatcher.isAdEvidence(it.text) }
             timings += SkipLayer.L2_OCR to (clock() - started)
             if (pass.hit != null && (adEvidence || pass.countdown != null)) {
@@ -50,17 +60,25 @@ class DetectionPipeline<I>(
                     requiresCountdownProof = pass.requiresCountdownProof || !adEvidence), timings)
             }
         }
-        if (settings.layer3Enabled && adEvidence) {
+        // The image detectors must also see ads that expose no readable ad badge.
+        if (settings.layer3Enabled && clock() - passStarted < timeBudgetMs) {
             val started = clock()
             val hit = l3yolo(image)
             timings += SkipLayer.L3_YOLO to (clock() - started)
             if (hit != null) return Result(SkipTarget(hit.first, hit.second, SkipLayer.L3_YOLO), timings)
         }
-        return Result(null, timings, if (adEvidence) "未找到符合条件的跳过按钮" else "未识别到广告标识或有效倒计时")
+        val remaining = timeBudgetMs - (clock() - passStarted)
+        if (settings.vlmEnabled && remaining > 0) {
+            val started = clock()
+            val hit = l3vlm(image, minOf(remaining, 4_000L))
+            timings += SkipLayer.L3_VLM to (clock() - started)
+            if (hit != null) return Result(SkipTarget(hit.first, hit.second, SkipLayer.L3_VLM), timings)
+        }
+        return Result(null, timings, "δ�ҵ���ȷ�ϵ�������ť")
     }
 
     companion object {
-        fun create(yolo: YoloSkipDetector?, excluded: Collection<String>): DetectionPipeline<Bitmap> {
+        fun create(yolo: YoloSkipDetector?, vlm: VlmDetector?, excluded: Collection<String>): DetectionPipeline<Bitmap> {
             val ocr = OcrDetector()
             return DetectionPipeline(
                 l1 = { root, keywords ->
@@ -72,16 +90,15 @@ class DetectionPipeline<I>(
                     val hit = lines.filter {
                         SkipSafety.isOcrCandidate(it, bitmap.width, bitmap.height)
                     }.let { KeywordMatcher.findSkipLine(it, keywords, excluded) }
-                    OcrPass(hit?.let { it.centerX.toFloat() to it.centerY.toFloat() }, lines,
-                        requiresCountdownProof = hit != null && !SkipSafety.isCorner(
-                            hit.centerX.toFloat(), hit.centerY.toFloat(), bitmap.width, bitmap.height))
+                    OcrPass(hit?.let { it.centerX.toFloat() to it.centerY.toFloat() }, lines)
                 },
                 l3yolo = { bitmap ->
                     yolo?.findSkipButton(bitmap)?.takeIf {
-                        !it.isEmpty && it.width() <= bitmap.width * 0.4f &&
-                            it.height() <= bitmap.height * 0.12f &&
-                            SkipSafety.isCorner(it.exactCenterX(), it.exactCenterY(), bitmap.width, bitmap.height)
+                        SkipSafety.isButtonBox(it.left, it.top, it.right, it.bottom, bitmap.width, bitmap.height)
                     }?.let { it.exactCenterX() to it.exactCenterY() }
+                },
+                l3vlm = { bitmap, timeout ->
+                    vlm?.findSkipButton(bitmap, timeout)?.let { it.exactCenterX() to it.exactCenterY() }
                 },
             )
         }

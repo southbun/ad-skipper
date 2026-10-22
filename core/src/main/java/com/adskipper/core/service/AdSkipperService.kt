@@ -12,6 +12,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Path
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Build
 import android.os.PowerManager
@@ -24,6 +25,10 @@ import com.adskipper.core.data.AppSettings
 import com.adskipper.core.data.SettingsRepository
 import com.adskipper.core.data.StatsRepository
 import com.adskipper.core.detect.DetectionPipeline
+import com.adskipper.core.detect.FrameVerifier
+import com.adskipper.core.detect.VlmDetector
+import com.adskipper.core.model.ModelManager
+import com.adskipper.core.vlm.VlmEngine
 import com.adskipper.core.detect.NodeMatcher
 import com.adskipper.core.detect.SkipLayer
 import com.adskipper.core.detect.SkipSafety
@@ -54,6 +59,7 @@ class AdSkipperService : AccessibilityService() {
     private var settingsRevision = 0L
     private var pollJob: Job? = null
     private var feedbackJob: Job? = null
+    private var modelJob: Job? = null
     private var pollingId: Long? = null
     private lateinit var stats: StatsRepository
     private lateinit var overlay: DebugOverlay
@@ -61,7 +67,7 @@ class AdSkipperService : AccessibilityService() {
     private var excludedPackages = emptySet<String>()
     private var selfLabels = emptySet<String>()
     private var selfTestVisible = false
-    private var lastMissReason = "未找到符合条件的跳过按钮"
+    private var lastMissReason = "δ�ҵ�����������������ť"
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -86,10 +92,17 @@ class AdSkipperService : AccessibilityService() {
                     overlay.dismiss()
                 }
                 settings = new
+                modelJob?.cancel()
+                modelJob = launch(Dispatchers.IO) {
+                    if (new.masterEnabled && new.vlmEnabled) {
+                        ModelManager(this@AdSkipperService).loadModel()
+                    } else {
+                        VlmEngine.release()
+                    }
+                }
                 if (new.masterEnabled && new.layer3Enabled && yolo == null) {
                     yolo = YoloSkipDetector(this@AdSkipperService).takeIf { it.isReady }
                     launch {
-                        delay(8_000L)
                         if (settings.masterEnabled && settings.layer3Enabled) {
                             withContext(Dispatchers.Default) { yolo?.warmUp() }
                         }
@@ -108,7 +121,7 @@ class AdSkipperService : AccessibilityService() {
             selfTestVisible = event.className?.toString()?.endsWith("TestAdActivity") == true
         }
         val allowed = settings.masterEnabled &&
-            (settings.layer1Enabled || settings.layer2Enabled || settings.layer3Enabled) &&
+            (settings.layer1Enabled || settings.layer2Enabled || settings.layer3Enabled || settings.vlmEnabled) &&
             pkg !in settings.whitelist && pkg !in excludedPackages &&
             (pkg != packageName || (settings.selfTest && selfTestVisible)) &&
             getSystemService(PowerManager::class.java).isInteractive
@@ -122,13 +135,13 @@ class AdSkipperService : AccessibilityService() {
         feedbackJob?.cancel()
         overlay.dismiss()
         pollingId = session.id
-        lastMissReason = "未找到符合条件的跳过按钮"
+        lastMissReason = "δ�ҵ�����������������ť"
         pollJob = scope.launch {
             val wakeLock = getSystemService(PowerManager::class.java)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "adskipper:splash")
             try {
                 wakeLock.acquire(8_000L)
-                if (settings.debugOverlay) overlay.update("正在识别开屏")
+                if (settings.debugOverlay) overlay.update("����ʶ����")
                 delay(500)
                 var attempted = false
                 while (isActive && sessions.isCurrent(session, SystemClock.elapsedRealtime())) {
@@ -149,6 +162,7 @@ class AdSkipperService : AccessibilityService() {
     }
 
     private fun stopSession() {
+        VlmEngine.cancelInference()
         sessions.invalidate()
         pollJob?.cancel()
         pollJob = null
@@ -172,9 +186,11 @@ class AdSkipperService : AccessibilityService() {
         val windowId = root.windowId
         val revision = settingsRevision
         val snapshot = settings
-        val pipeline = DetectionPipeline.create(if (snapshot.layer3Enabled) yolo else null, selfLabels)
+        val pipeline = DetectionPipeline.create(if (snapshot.layer3Enabled) yolo else null,
+            if (snapshot.vlmEnabled) VlmDetector() else null, selfLabels)
+        val frames = ArrayList<Bitmap>()
         val started = SystemClock.elapsedRealtime()
-        suspend fun pass(node: AccessibilityNodeInfo): SkipTarget? {
+        suspend fun pass(node: AccessibilityNodeInfo, includeVlm: Boolean = true): SkipTarget? {
             val remaining = sessions.remainingMs(session, SystemClock.elapsedRealtime())
             if (remaining <= 0) return null
             val evidence = NodeMatcher.hasAdEvidence(node)
@@ -182,14 +198,15 @@ class AdSkipperService : AccessibilityService() {
                 withContext(Dispatchers.Default) {
                     pipeline.detect(
                         node,
-                        { ScreenshotCapturer.capture(this@AdSkipperService) },
-                        snapshot,
+                        { ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add) },
+                        if (includeVlm) snapshot else snapshot.copy(vlmEnabled = false),
                         nodeAdEvidence = evidence,
+                        timeBudgetMs = remaining,
                     )
                 }
             }
             if (sessions.isCurrent(session, SystemClock.elapsedRealtime()) && result?.target == null) {
-                lastMissReason = result?.missReason ?: "画面识别超时"
+                lastMissReason = result?.missReason ?: "����ʶ��ʱ"
             }
             return result?.target
         }
@@ -198,15 +215,23 @@ class AdSkipperService : AccessibilityService() {
             val sampledAt = SystemClock.elapsedRealtime()
             currentCoroutineContext().ensureActive()
             if (revision != settingsRevision || validRoot(session, windowId) == null) return false
-            if (first.requiresCountdownProof && settings.debugOverlay) overlay.update("正在确认跳过倒计时")
+            if (first.requiresCountdownProof && settings.debugOverlay) overlay.update("����ȷ����������ʱ")
             delay(if (first.requiresCountdownProof) 1_050 else 120)
             val freshRoot = validRoot(session, windowId) ?: return false
             if (!freshRoot.refresh()) return false
-            val verified = pass(freshRoot) ?: return false
+            val verified = if (first.layer == SkipLayer.L3_VLM) {
+                val source = frames.lastOrNull() ?: return false
+                val fresh = ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add) ?: return false
+                if (!FrameVerifier.matches(source, fresh, first)) {
+                    lastMissReason = "�����ѱ仯���ѷ����ɰ�ť����"
+                    return false
+                }
+                first
+            } else pass(freshRoot, includeVlm = false) ?: return false
             currentCoroutineContext().ensureActive()
             val liveRoot = validRoot(session, windowId) ?: return false
             if (!SkipSafety.canConfirmTarget(first, verified, SystemClock.elapsedRealtime() - sampledAt)) {
-                lastMissReason = "按钮或倒计时未通过复查"
+                lastMissReason = "��ť�򵹼�ʱδͨ������"
                 return false
             }
             if (revision != settingsRevision) return false
@@ -242,20 +267,22 @@ class AdSkipperService : AccessibilityService() {
                 showClickFeedback(session, windowId, revision, verified, viaNode)
                 stats.record(session.packageName, verified.layer.name, SystemClock.elapsedRealtime() - started)
             } else if (settings.debugOverlay) {
-                overlay.update("点击未执行：${verified.layer}")
+                overlay.update("���δִ�У�${verified.layer}")
             }
             true
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
             false
+        } finally {
+            frames.forEach { if (!it.isRecycled) it.recycle() }
         }
     }
 
     private fun showClickFeedback(session: SplashSessionTracker.Session, windowId: Int, revision: Long,
                                  target: SkipTarget, viaNode: Boolean) {
         if (!settings.debugOverlay) return
-        overlay.update("已发送${if (viaNode) "控件" else "触摸"}点击：${target.layer}")
+        overlay.update("�ѷ���${if (viaNode) "�ؼ�" else "����"}�����${target.layer}")
         if (target.layer != SkipLayer.L1_NODE) return
         feedbackJob?.cancel()
         feedbackJob = scope.launch {
@@ -265,16 +292,16 @@ class AdSkipperService : AccessibilityService() {
             val message = try {
                 val after = rootInActiveWindow
                 if (after == null || !after.refresh()) {
-                    "点击已发送，页面状态待确认"
+                    "����ѷ��ͣ�ҳ��״̬��ȷ��"
                 } else if (!SkipSafety.sameWindow(session.packageName, windowId, after.packageName?.toString(), after.windowId)) {
-                    "点击后页面已切换"
+                    "�����ҳ�����л�"
                 } else if (NodeMatcher.findSkipNode(after, settings.keywords, selfLabels) != null) {
-                    "按钮仍在，未确认跳过"
+                    "��ť���ڣ�δȷ������"
                 } else {
-                    "未再识别到跳过按钮"
+                    "δ��ʶ��������ť"
                 }
             } catch (_: Exception) {
-                "点击已发送，页面状态待确认"
+                "����ѷ��ͣ�ҳ��״̬��ȷ��"
             }
             overlay.update(message)
         }
@@ -317,9 +344,9 @@ class AdSkipperService : AccessibilityService() {
 
     private fun startNotification() {
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("keepalive", "运行状态", NotificationManager.IMPORTANCE_MIN))
+        manager.createNotificationChannel(NotificationChannel("keepalive", "����״̬", NotificationManager.IMPORTANCE_MIN))
         val notification = Notification.Builder(this, "keepalive")
-            .setSmallIcon(android.R.drawable.ic_menu_view).setContentTitle("开屏跳过运行中").setOngoing(true).build()
+            .setSmallIcon(android.R.drawable.ic_menu_view).setContentTitle("��������������").setOngoing(true).build()
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
@@ -335,6 +362,7 @@ class AdSkipperService : AccessibilityService() {
         runCatching { unregisterReceiver(screenReceiver) }
         yolo?.close()
         scope.cancel()
+        CoroutineScope(Dispatchers.IO).launch { VlmEngine.release() }
         super.onDestroy()
     }
 }

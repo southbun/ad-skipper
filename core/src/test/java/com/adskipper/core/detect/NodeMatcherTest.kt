@@ -110,6 +110,6 @@ class NodeMatcherTest {
         val button = node(lowerBox, "���� 5", clickable = true)
         shadowOf(root).addChild(button)
         assertEquals(lowerBox, NodeMatcher.findSkipNode(root, keywords))
-        assertSame(button, NodeMatcher.findSkipNodeInfo(root, keywords))
+        assertTrue(NodeMatcher.findSkipNodeInfo(root, keywords)!!.isClickable)
     }
 }

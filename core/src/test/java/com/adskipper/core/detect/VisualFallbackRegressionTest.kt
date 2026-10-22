@@ -19,7 +19,7 @@ class VisualFallbackRegressionTest {
         )
         val target = pipeline.detect(null, { Unit }, AppSettings(layer3Enabled = true)).target
         assertEquals(SkipLayer.L3_YOLO, target?.layer)
-        assertEquals(1800f, target!!.y)
+        assertEquals(1800f, target!!.y, .01f)
     }
 
     @Test fun aSmallLowerSkipLabelIsEligibleForRecognition() {

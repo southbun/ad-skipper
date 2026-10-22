@@ -21,11 +21,12 @@ object SkipSafety {
             line.width > width * 0.4f || line.height > height * 0.12f ||
             line.centerX - line.width / 2 < 0 || line.centerY - line.height / 2 < 0 ||
             line.centerX + line.width / 2 > width || line.centerY + line.height / 2 > height) return false
-        val corner = isCorner(line.centerX.toFloat(), line.centerY.toFloat(), width, height)
-        val edgeCountdown = KeywordMatcher.countdown(line.text) != null &&
-            (line.centerX <= width * 0.3f || line.centerX >= width * 0.7f)
-        return corner || edgeCountdown
+        return true
     }
+
+    fun isButtonBox(left: Int, top: Int, right: Int, bottom: Int, width: Int, height: Int): Boolean =
+        width > 0 && height > 0 && left >= 0 && top >= 0 && right <= width && bottom <= height &&
+            right > left && bottom > top && right - left <= width * 0.4f && bottom - top <= height * 0.12f
 
     fun canConfirmTarget(first: SkipTarget, second: SkipTarget, elapsedMs: Long): Boolean {
         if (!sameTarget(first, second)) return false

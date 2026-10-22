@@ -49,8 +49,12 @@ class YoloSkipDetector(private val context: Context) {
 
     fun findSkipButton(bitmap: Bitmap): Rect? {
         if (!isReady) return null
+        // A timed-out native task may still run; it must own its pixels.
+        val owned = bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return null
         return try {
-            executor.submit(Callable { detect(bitmap) }).get(15, TimeUnit.SECONDS)
+            executor.submit(Callable {
+                try { detect(owned) } finally { owned.recycle() }
+            }).get(2, TimeUnit.SECONDS)
         } catch (t: Throwable) {
             Timber.e(t, "YOLO detection failed")
             null
@@ -76,12 +80,14 @@ class YoloSkipDetector(private val context: Context) {
         val padY = (IN_SIZE - h) / 2f
 
         val canvasBmp = Bitmap.createBitmap(IN_SIZE, IN_SIZE, Bitmap.Config.ARGB_8888)
+        val scaled = Bitmap.createScaledBitmap(bitmap, w, h, true)
         Canvas(canvasBmp).apply {
             drawColor(Color.rgb(114, 114, 114))
-            drawBitmap(Bitmap.createScaledBitmap(bitmap, w, h, true), padX, padY, null)
+            drawBitmap(scaled, padX, padY, null)
         }
+        if (scaled !== bitmap) scaled.recycle()
 
-        val out = YoloNative.nativeInfer(canvasBmp) ?: return null
+        val out = try { YoloNative.nativeInfer(canvasBmp) } finally { canvasBmp.recycle() } ?: return null
         // out layout: index = channel*ANCHORS + anchor; channels 0..3 = xywh
         // (640px letterbox coords), channel 4 = class score (already sigmoid).
         var best = -1f

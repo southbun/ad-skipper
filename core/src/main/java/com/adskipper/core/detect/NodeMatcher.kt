@@ -38,8 +38,7 @@ object NodeMatcher {
         return box.takeIf {
             !it.isEmpty && screen.contains(it) && it.width() <= screen.width() * 0.4f &&
                 it.height() <= screen.height() * 0.12f &&
-                it.width().toLong() * it.height() <= screen.width().toLong() * screen.height() / 20 &&
-                SkipSafety.isCorner(it.exactCenterX() - screen.left, it.exactCenterY() - screen.top, screen.width(), screen.height())
+                it.width().toLong() * it.height() <= screen.width().toLong() * screen.height() / 20
         }
     }
 

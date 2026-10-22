@@ -16,14 +16,15 @@ data class AppSettings(
     val masterEnabled: Boolean = true,
     val layer1Enabled: Boolean = true,
     val layer2Enabled: Boolean = true,
-    val layer3Enabled: Boolean = false,
+    val layer3Enabled: Boolean = true,
+    val vlmEnabled: Boolean = true,
     val keywords: Set<String> = DEFAULT_KEYWORDS,
     val whitelist: Set<String> = DEFAULT_WHITELIST,
     val debugOverlay: Boolean = false,
     val selfTest: Boolean = false,
 ) {
     companion object {
-        val DEFAULT_KEYWORDS = setOf("跳过", "Skip", "Skip Ad", "关闭广告", "跳过广告", "skip_ad")
+        val DEFAULT_KEYWORDS = setOf("����", "Skip", "Skip Ad", "�رչ��", "�������", "skip_ad")
         val DEFAULT_WHITELIST = setOf(
             "com.android.systemui", "com.android.settings", "com.android.launcher3",
             "com.google.android.apps.nexuslauncher", "com.miui.home", "com.huawei.android.launcher",
@@ -38,7 +39,8 @@ class SettingsRepository(private val context: Context) {
             masterEnabled = p[KEY_MASTER] ?: true,
             layer1Enabled = p[KEY_L1] ?: true,
             layer2Enabled = p[KEY_L2] ?: true,
-            layer3Enabled = p[KEY_L3] ?: false,
+            layer3Enabled = p[KEY_L3] ?: true,
+            vlmEnabled = p[KEY_VLM] ?: true,
             keywords = p[KEY_KEYWORDS] ?: AppSettings.DEFAULT_KEYWORDS,
             whitelist = p[KEY_WHITELIST] ?: AppSettings.DEFAULT_WHITELIST,
             debugOverlay = p[KEY_DEBUG] ?: false,
@@ -50,6 +52,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun setLayer1Enabled(v: Boolean) { context.dataStore.edit { it[KEY_L1] = v } }
     suspend fun setLayer2Enabled(v: Boolean) { context.dataStore.edit { it[KEY_L2] = v } }
     suspend fun setLayer3Enabled(v: Boolean) { context.dataStore.edit { it[KEY_L3] = v } }
+    suspend fun setVlmEnabled(v: Boolean) { context.dataStore.edit { it[KEY_VLM] = v } }
     suspend fun setKeywords(v: Set<String>) { context.dataStore.edit { it[KEY_KEYWORDS] = v } }
     suspend fun setWhitelist(v: Set<String>) { context.dataStore.edit { it[KEY_WHITELIST] = v } }
     suspend fun setDebugOverlay(v: Boolean) { context.dataStore.edit { it[KEY_DEBUG] = v } }
@@ -73,6 +76,7 @@ class SettingsRepository(private val context: Context) {
         val KEY_L1 = booleanPreferencesKey("layer1_enabled")
         val KEY_L2 = booleanPreferencesKey("layer2_enabled")
         val KEY_L3 = booleanPreferencesKey("layer3_enabled")
+        val KEY_VLM = booleanPreferencesKey("vlm_enabled")
         val KEY_KEYWORDS = stringSetPreferencesKey("keywords")
         val KEY_WHITELIST = stringSetPreferencesKey("whitelist")
         val KEY_DEBUG = booleanPreferencesKey("debug_overlay")

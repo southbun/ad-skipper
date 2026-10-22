@@ -15,9 +15,9 @@ concurrency:
 
 jobs:
   verify:
-    name: Test and build offline APK
+    name: Test and build local AI APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v5
@@ -25,6 +25,20 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
+      - name: Install Vulkan shader tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y glslc spirv-headers
+      - name: Fetch pinned local VLM dependencies
+        run: |
+          curl --fail --location --retry 3 --output llama.tar.gz 'https://codeload.github.com/ggml-org/llama.cpp/tar.gz/d6cf0b288dfac7015cfe705286e612c66a376a9c'
+          echo '745ea76a4183aeb36b107ab58e9b86ef6abebfd389d66125c0fe111895b2e3ae  llama.tar.gz' | sha256sum --check
+          mkdir -p core/src/main/cpp/llama.cpp
+          tar -xzf llama.tar.gz --strip-components=1 -C core/src/main/cpp/llama.cpp
+          curl --fail --location --retry 3 --output vulkan-headers.tar.gz 'https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/8864cdc896bbc2a9b6eb36b3218fc9ef57908d77'
+          echo '35824117f649befc664a12622bc801eddbba036ac03d906db400ee1c1e7903e9  vulkan-headers.tar.gz' | sha256sum --check
+          mkdir -p core/src/main/cpp/vulkan-headers
+          tar -xzf vulkan-headers.tar.gz --strip-components=1 -C core/src/main/cpp/vulkan-headers
       - name: Fetch pinned ncnn library
         run: |
           curl --fail --location --retry 3 --output ncnn.zip 'https://github.com/Tencent/ncnn/releases/download/20260526/ncnn-20260526-android-vulkan.zip'
@@ -75,10 +89,12 @@ jobs:
           ANALYZER="$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
           "$ANALYZER" manifest permissions "$APK" > dist/permissions.txt
           "$ANALYZER" manifest print "$APK" > dist/manifest.xml
-          if grep -Eq 'android.permission.(INTERNET|ACCESS_NETWORK_STATE|USE_EXACT_ALARM|READ_CONTACTS|READ_SMS|REQUEST_INSTALL_PACKAGES)' dist/permissions.txt; then
+          if grep -Eq 'android.permission.(ACCESS_NETWORK_STATE|USE_EXACT_ALARM|READ_CONTACTS|READ_SMS|REQUEST_INSTALL_PACKAGES)' dist/permissions.txt; then
             echo "Unexpected sensitive permission"; exit 1
           fi
           grep -q 'android:allowBackup="false"' dist/manifest.xml
+          grep -q 'android:usesCleartextTraffic="false"' dist/manifest.xml
+          grep -q 'android.permission.INTERNET' dist/permissions.txt
           SIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -print | sort -r | head -1)
           "$SIGNER" verify --verbose --print-certs "$APK" > dist/signature.txt
           (cd dist && sha256sum *.apk > SHA256SUMS.txt)

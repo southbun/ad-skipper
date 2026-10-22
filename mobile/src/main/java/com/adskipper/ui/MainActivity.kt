@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +26,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.adskipper.ui.home.HomeScreen
+import com.adskipper.ui.model.ModelScreen
 import com.adskipper.ui.settings.SettingsScreen
 import com.adskipper.ui.stats.StatsScreen
 
@@ -32,12 +34,14 @@ object Routes {
     const val HOME = "home"
     const val SETTINGS = "settings"
     const val STATS = "stats"
+    const val MODEL = "model"
 }
 
 private val tabs = listOf(
-    Triple(Routes.HOME, "首页", Icons.Filled.Home),
-    Triple(Routes.SETTINGS, "设置", Icons.Filled.Settings),
-    Triple(Routes.STATS, "统计", Icons.Filled.BarChart),
+    Triple(Routes.HOME, "��ҳ", Icons.Filled.Home),
+    Triple(Routes.MODEL, "���� AI", Icons.Filled.Psychology),
+    Triple(Routes.SETTINGS, "����", Icons.Filled.Settings),
+    Triple(Routes.STATS, "ͳ��", Icons.Filled.BarChart),
 )
 
 class MainActivity : ComponentActivity() {
@@ -84,6 +88,7 @@ private fun AppNavHost() {
             modifier = Modifier.padding(padding),
         ) {
             composable(Routes.HOME) { HomeScreen() }
+            composable(Routes.MODEL) { ModelScreen() }
             composable(Routes.SETTINGS) { SettingsScreen() }
             composable(Routes.STATS) { StatsScreen() }
         }
