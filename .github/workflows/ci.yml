@@ -59,8 +59,10 @@ jobs:
           echo '26909c92eed35afed4a966b5e9e503fcb0a529691ea3f910ec2c94a4fff52804  ncnn.zip' | sha256sum --check
           unzip -q ncnn.zip
           mv ncnn-20260526-android-vulkan core/src/main/cpp/ncnn
-      - name: Unit tests and Android lint
-        run: ./gradlew :core:testDebugUnitTest :mobile:testDebugUnitTest :mobile:lintDebug --stacktrace
+      - name: Core regression tests
+        run: ./gradlew :core:testDebugUnitTest --stacktrace
+      - name: Mobile tests and Android lint
+        run: ./gradlew :mobile:testDebugUnitTest :mobile:lintDebug --stacktrace
       - name: Configure optional personal signing
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}

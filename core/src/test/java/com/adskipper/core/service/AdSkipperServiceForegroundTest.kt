@@ -47,10 +47,14 @@ class AdSkipperServiceForegroundTest {
     }
 
     @Suppress("DEPRECATION")
-    private fun send(rootPackage: String?, eventPackage: String?, type: Int = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+    private fun send(rootPackage: String?, eventPackage: String?, type: Int = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+                     className: String? = null) {
         val root = rootPackage?.let { pkg -> AccessibilityNodeInfo.obtain().apply { packageName = pkg } }
         shadowOf(service).setRootInActiveWindow(root)
-        service.onAccessibilityEvent(AccessibilityEvent.obtain(type).apply { packageName = eventPackage })
+        service.onAccessibilityEvent(AccessibilityEvent.obtain(type).apply {
+            packageName = eventPackage
+            this.className = className
+        })
     }
 
     private fun current() = sessions.observeForeground(app, true, SystemClock.elapsedRealtime())
@@ -97,5 +101,25 @@ class AdSkipperServiceForegroundTest {
         val first = current()!!
         send(null, service.packageName)
         assertEquals(first, current())
+    }
+
+    @Test fun anOverlayWindowDoesNotDisableTheBuiltInAdTest() {
+        ReflectionHelpers.setField(service, "settings", AppSettings(selfTest = true))
+        val ownPackage = service.packageName
+        send(ownPackage, ownPackage, className = "com.adskipper.ui.TestAdActivity")
+        val first = sessions.observeForeground(ownPackage, true, SystemClock.elapsedRealtime())!!
+        send(ownPackage, ownPackage, className = "android.widget.TextView")
+        assertTrue("The status overlay must not end the ad-test recognition window",
+            sessions.isCurrent(first, SystemClock.elapsedRealtime()))
+    }
+
+    @Test fun leavingTheAdTestForTheMainActivityStillEndsRecognition() {
+        ReflectionHelpers.setField(service, "settings", AppSettings(selfTest = true))
+        val ownPackage = service.packageName
+        send(ownPackage, ownPackage, className = "com.adskipper.ui.TestAdActivity")
+        val first = sessions.observeForeground(ownPackage, true, SystemClock.elapsedRealtime())!!
+        send(ownPackage, ownPackage, className = "com.adskipper.ui.MainActivity")
+        assertFalse(sessions.isCurrent(first, SystemClock.elapsedRealtime()))
+        assertNull(ReflectionHelpers.getField<Any?>(sessions, "active"))
     }
 }
