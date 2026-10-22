@@ -27,6 +27,7 @@ import com.adskipper.core.data.StatsRepository
 import com.adskipper.core.detect.DetectionPipeline
 import com.adskipper.core.detect.FrameVerifier
 import com.adskipper.core.detect.VlmDetector
+import com.adskipper.core.detect.VisualFallback
 import com.adskipper.core.model.ModelManager
 import com.adskipper.core.vlm.VlmEngine
 import com.adskipper.core.detect.NodeMatcher
@@ -63,6 +64,7 @@ class AdSkipperService : AccessibilityService() {
     private var pollingId: Long? = null
     private lateinit var stats: StatsRepository
     private lateinit var overlay: DebugOverlay
+    private lateinit var visualFallback: VisualFallback<Bitmap>
     private var yolo: YoloSkipDetector? = null
     private var excludedPackages = emptySet<String>()
     private var selfLabels = emptySet<String>()
@@ -78,6 +80,19 @@ class AdSkipperService : AccessibilityService() {
     override fun onServiceConnected() {
         stats = StatsRepository(this)
         overlay = DebugOverlay(this)
+        visualFallback = VisualFallback(
+            scope,
+            detect = { image, timeout ->
+                withContext(Dispatchers.Default) {
+                    DetectionPipeline.create(null, VlmDetector(), selfLabels).detect(
+                        null, { image },
+                        AppSettings(layer1Enabled = false, layer2Enabled = false, layer3Enabled = false),
+                        timeBudgetMs = timeout,
+                    ).target
+                }
+            },
+            release = { it.recycle() },
+        )
         excludedPackages = resolveExcludedPackages()
         selfLabels = setOf(applicationInfo.loadLabel(packageManager).toString())
         ContextCompat.registerReceiver(
@@ -131,6 +146,7 @@ class AdSkipperService : AccessibilityService() {
             return
         }
         if (pollingId == session.id) return
+        clearVisualFallback()
         pollJob?.cancel()
         feedbackJob?.cancel()
         overlay.dismiss()
@@ -157,18 +173,24 @@ class AdSkipperService : AccessibilityService() {
                 sessions.finish(session)
                 if (wakeLock.isHeld) wakeLock.release()
                 if (pollingId == session.id) pollingId = null
+                if (pollingId == null) clearVisualFallback()
             }
         }
     }
 
     private fun stopSession() {
-        VlmEngine.cancelInference()
+        clearVisualFallback()
         sessions.invalidate()
         pollJob?.cancel()
         pollJob = null
         pollingId = null
         feedbackJob?.cancel()
         feedbackJob = null
+    }
+
+    private fun clearVisualFallback() {
+        VlmEngine.cancelInference()
+        if (::visualFallback.isInitialized) visualFallback.clear()
     }
 
     private fun validRoot(session: SplashSessionTracker.Session, windowId: Int? = null): AccessibilityNodeInfo? {
@@ -186,11 +208,10 @@ class AdSkipperService : AccessibilityService() {
         val windowId = root.windowId
         val revision = settingsRevision
         val snapshot = settings
-        val pipeline = DetectionPipeline.create(if (snapshot.layer3Enabled) yolo else null,
-            if (snapshot.vlmEnabled) VlmDetector() else null, selfLabels)
+        val pipeline = DetectionPipeline.create(if (snapshot.layer3Enabled) yolo else null, null, selfLabels)
         val frames = ArrayList<Bitmap>()
         val started = SystemClock.elapsedRealtime()
-        suspend fun pass(node: AccessibilityNodeInfo, includeVlm: Boolean = true): SkipTarget? {
+        suspend fun pass(node: AccessibilityNodeInfo): SkipTarget? {
             val remaining = sessions.remainingMs(session, SystemClock.elapsedRealtime())
             if (remaining <= 0) return null
             val evidence = NodeMatcher.hasAdEvidence(node)
@@ -199,7 +220,7 @@ class AdSkipperService : AccessibilityService() {
                     pipeline.detect(
                         node,
                         { ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add) },
-                        if (includeVlm) snapshot else snapshot.copy(vlmEnabled = false),
+                        snapshot.copy(vlmEnabled = false),
                         nodeAdEvidence = evidence,
                         timeBudgetMs = remaining,
                     )
@@ -211,7 +232,20 @@ class AdSkipperService : AccessibilityService() {
             return result?.target
         }
         return try {
-            val first = pass(root) ?: return false
+            val key = VisualFallback.Key(session.id, windowId, revision)
+            val fast = pass(root)
+            val proposal = if (fast == null) visualFallback.take(key) else null
+            proposal?.image?.let(frames::add)
+            val first = fast ?: proposal?.target ?: run {
+                if (snapshot.vlmEnabled && VlmEngine.isReady && validRoot(session, windowId) != null) {
+                    val image = frames.lastOrNull() ?: ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add)
+                    if (image != null && visualFallback.submit(key, image,
+                            minOf(4_000L, sessions.remainingMs(session, SystemClock.elapsedRealtime())))) {
+                        frames.remove(image)
+                    }
+                }
+                return false
+            }
             val sampledAt = SystemClock.elapsedRealtime()
             currentCoroutineContext().ensureActive()
             if (revision != settingsRevision || validRoot(session, windowId) == null) return false
@@ -227,7 +261,7 @@ class AdSkipperService : AccessibilityService() {
                     return false
                 }
                 first
-            } else pass(freshRoot, includeVlm = false) ?: return false
+            } else pass(freshRoot) ?: return false
             currentCoroutineContext().ensureActive()
             val liveRoot = validRoot(session, windowId) ?: return false
             if (!SkipSafety.canConfirmTarget(first, verified, SystemClock.elapsedRealtime() - sampledAt)) {
@@ -251,6 +285,7 @@ class AdSkipperService : AccessibilityService() {
 
             // Consume before dispatch; fall back only when the node action was rejected.
             sessions.finish(session)
+            clearVisualFallback()
             val viaNode = node?.isClickable == true && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             val completed = viaNode || run {
                 currentCoroutineContext().ensureActive()
