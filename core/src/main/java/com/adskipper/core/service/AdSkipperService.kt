@@ -136,8 +136,10 @@ class AdSkipperService : AccessibilityService() {
                 event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
                     (it in settings.whitelist || it in excludedPackages)
             } ?: return
-        if (pkg == packageName && event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            selfTestVisible = event.className?.toString()?.endsWith("TestAdActivity") == true
+        val activityClass = event.className?.toString()
+        if (pkg == packageName && event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            activityClass?.endsWith("Activity") == true) {
+            selfTestVisible = activityClass.endsWith("TestAdActivity")
         }
         val allowed = settings.masterEnabled &&
             (settings.layer1Enabled || settings.layer2Enabled || settings.layer3Enabled || settings.vlmEnabled) &&
