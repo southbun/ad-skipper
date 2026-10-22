@@ -13,6 +13,7 @@ android {
         externalNativeBuild {
             cmake {
                 abiFilters += "arm64-v8a"
+                targets += listOf("yolo_jni", "vlm_jni")
                 arguments += "-DANDROID_STL=c++_shared"
             }
         }
