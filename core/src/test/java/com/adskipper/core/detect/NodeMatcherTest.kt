@@ -15,7 +15,7 @@ class NodeMatcherTest {
     private val screen = Rect(0, 0, 1080, 2400)
     private val buttonBox = Rect(850, 100, 1050, 200)
     private val labelBox = Rect(900, 120, 1000, 180)
-    private val keywords = listOf("跳过")
+    private val keywords = listOf("����")
 
     @Suppress("DEPRECATION")
     private fun node(box: Rect, text: String? = null, clickable: Boolean = false,
@@ -31,7 +31,7 @@ class NodeMatcherTest {
     @Test fun labelInsideButtonUsesTheButtonBounds() {
         val root = node(screen)
         val button = node(buttonBox, clickable = true)
-        val label = node(labelBox, "跳过 5")
+        val label = node(labelBox, "���� 5")
         shadowOf(root).addChild(button)
         shadowOf(button).addChild(label)
         assertEquals(buttonBox, NodeMatcher.findSkipNode(root, keywords))
@@ -39,7 +39,7 @@ class NodeMatcherTest {
 
     @Test fun disabledSkipControlIsNotAClickCandidate() {
         val root = node(screen)
-        shadowOf(root).addChild(node(buttonBox, "跳过", clickable = true, enabled = false))
+        shadowOf(root).addChild(node(buttonBox, "����", clickable = true, enabled = false))
         assertNull(NodeMatcher.findSkipNode(root, keywords))
     }
 
@@ -47,7 +47,7 @@ class NodeMatcherTest {
         val root = node(screen)
         val button = node(buttonBox, clickable = true, enabled = false)
         shadowOf(root).addChild(button)
-        shadowOf(button).addChild(node(labelBox, "跳过"))
+        shadowOf(button).addChild(node(labelBox, "����"))
         assertNull(NodeMatcher.findSkipNode(root, keywords))
     }
 
@@ -55,7 +55,7 @@ class NodeMatcherTest {
         val root = node(screen)
         val button = node(buttonBox, clickable = true)
         shadowOf(root).addChild(button)
-        shadowOf(button).addChild(node(labelBox, "跳过 5"))
+        shadowOf(button).addChild(node(labelBox, "���� 5"))
         var receivedAction = -1
         shadowOf(button).setOnPerformActionListener { action, _ ->
             receivedAction = action
@@ -71,7 +71,7 @@ class NodeMatcherTest {
         val root = node(screen)
         val container = node(screen, clickable = true)
         shadowOf(root).addChild(container)
-        shadowOf(container).addChild(node(labelBox, "跳过"))
+        shadowOf(container).addChild(node(labelBox, "����"))
         assertNull(NodeMatcher.findSkipNodeInfo(root, keywords))
     }
 
@@ -79,28 +79,37 @@ class NodeMatcherTest {
         val root = node(screen)
         val button = node(buttonBox, clickable = true).apply { packageName = "other.app" }
         shadowOf(root).addChild(button)
-        shadowOf(button).addChild(node(labelBox, "跳过"))
+        shadowOf(button).addChild(node(labelBox, "����"))
         assertNull(NodeMatcher.findSkipNodeInfo(root, keywords))
     }
 
     @Test fun clickableScreenCannotBeUsedAsASkipButton() {
         val root = node(screen, clickable = true)
-        shadowOf(root).addChild(node(labelBox, "跳过"))
+        shadowOf(root).addChild(node(labelBox, "����"))
         assertNull(NodeMatcher.findSkipNodeInfo(root, keywords))
     }
 
     @Test fun plainTextWithoutClickableParentKeepsCoordinateFallback() {
         val root = node(screen)
-        shadowOf(root).addChild(node(labelBox, "跳过"))
+        shadowOf(root).addChild(node(labelBox, "����"))
         assertEquals(labelBox, NodeMatcher.findSkipNode(root, keywords))
     }
 
     @Test fun buttonCanBeDetectedAfterItBecomesEnabled() {
         val root = node(screen)
-        val button = node(buttonBox, "跳过", clickable = true, enabled = false)
+        val button = node(buttonBox, "����", clickable = true, enabled = false)
         shadowOf(root).addChild(button)
         assertNull(NodeMatcher.findSkipNode(root, keywords))
         button.isEnabled = true
         assertEquals(buttonBox, NodeMatcher.findSkipNode(root, keywords))
+    }
+
+    @Test fun aLowerSkipButtonKeepsItsNativeClickTarget() {
+        val root = node(screen)
+        val lowerBox = Rect(850, 1700, 1050, 1800)
+        val button = node(lowerBox, "���� 5", clickable = true)
+        shadowOf(root).addChild(button)
+        assertEquals(lowerBox, NodeMatcher.findSkipNode(root, keywords))
+        assertSame(button, NodeMatcher.findSkipNodeInfo(root, keywords))
     }
 }
