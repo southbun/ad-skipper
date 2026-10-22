@@ -23,7 +23,7 @@ class DetectionPipeline<I>(
         }
     }
     data class Result(val target: SkipTarget?, val timings: List<Pair<SkipLayer, Long>>,
-                      val missReason: String = "δ�ҵ�����������������ť")
+                      val missReason: String = "未找到符合条件的跳过按钮")
 
     suspend fun detect(
         root: AccessibilityNodeInfo?,
@@ -41,7 +41,7 @@ class DetectionPipeline<I>(
             if (hit != null) return Result(SkipTarget(hit.first, hit.second, SkipLayer.L1_NODE), timings)
         }
         if (!settings.layer2Enabled && !settings.layer3Enabled && !settings.vlmEnabled) return Result(null, timings)
-        val image = screenshot() ?: return Result(null, timings, "�޷���ȡ���棬�ѱ����ؼ�ʶ��")
+        val image = screenshot() ?: return Result(null, timings, "无法读取画面，已保留控件识别")
         var adEvidence = nodeAdEvidence
         if (settings.layer2Enabled) {
             val started = clock()
@@ -74,7 +74,7 @@ class DetectionPipeline<I>(
             timings += SkipLayer.L3_VLM to (clock() - started)
             if (hit != null) return Result(SkipTarget(hit.first, hit.second, SkipLayer.L3_VLM), timings)
         }
-        return Result(null, timings, "δ�ҵ���ȷ�ϵ�������ť")
+        return Result(null, timings, "未找到可确认的跳过按钮")
     }
 
     companion object {

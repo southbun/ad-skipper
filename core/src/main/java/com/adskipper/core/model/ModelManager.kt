@@ -52,22 +52,22 @@ class ModelManager(context: Context) {
     fun startDownload() {
         if (job?.isActive == true) return
         job = scope.launch {
-            mutableStatus.value = Status(running = true, message = "׼������")
+            mutableStatus.value = Status(running = true, message = "准备下载")
             try {
-                check(dir.isDirectory || dir.mkdirs()) { "�޷�����ģ��Ŀ¼" }
+                check(dir.isDirectory || dir.mkdirs()) { "无法创建模型目录" }
                 var completed = 0L
                 for (file in ModelCatalog.files) {
                     downloadFile(file, completed)
                     completed += file.size
                 }
-                mutableStatus.value = Status(downloaded = true, bytes = totalBytes, message = "ģ���ļ���У��")
+                mutableStatus.value = Status(downloaded = true, bytes = totalBytes, message = "模型文件已校验")
                 val settings = SettingsRepository(context).settings.first()
                 if (settings.masterEnabled && settings.vlmEnabled) loadModel()
             } catch (cancelled: CancellationException) {
-                mutableStatus.value = Status(downloaded = isDownloaded(), message = "����ͣ�����Լ�������")
+                mutableStatus.value = Status(downloaded = isDownloaded(), message = "已暂停，可以继续下载")
                 throw cancelled
             } catch (error: Exception) {
-                mutableStatus.value = Status(downloaded = isDownloaded(), message = "����δ��ɣ�${error.message}")
+                mutableStatus.value = Status(downloaded = isDownloaded(), message = "下载未完成：${error.message}")
             } finally {
                 connection?.disconnect()
                 connection = null
@@ -95,13 +95,13 @@ class ModelManager(context: Context) {
         for (url in file.urls) {
             currentCoroutineContext().ensureActive()
             try {
-                if (part.length() > file.size) check(part.delete()) { "�޷�����δ��ɵ�ģ��" }
+                if (part.length() > file.size) check(part.delete()) { "无法重置未完成的模型" }
                 if (part.length() != file.size) downloadFrom(url, file, part, completed)
-                mutableStatus.value = Status(running = true, bytes = completed + part.length(), message = "����У��ģ���ļ�")
+                mutableStatus.value = Status(running = true, bytes = completed + part.length(), message = "正在校验模型文件")
                 val coroutine = currentCoroutineContext()
                 if (!ModelFiles.verify(part, file) { coroutine.ensureActive() }) {
                     part.delete()
-                    error("ģ��У��ʧ�ܣ�����������")
+                    error("模型校验失败，请重新下载")
                 }
                 Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
                 marker.writeText(file.sha256)
@@ -113,7 +113,7 @@ class ModelManager(context: Context) {
                 lastError = error
             }
         }
-        throw lastError ?: IllegalStateException("û�п��õ�����Դ")
+        throw lastError ?: IllegalStateException("没有可用的下载源")
     }
 
     private suspend fun downloadFrom(url: String, file: ModelFile, part: File, completed: Long) {
@@ -126,11 +126,11 @@ class ModelManager(context: Context) {
             request.setRequestProperty("Accept-Encoding", "identity")
             if (offset > 0) request.setRequestProperty("Range", "bytes=$offset-")
             val code = request.responseCode
-            check(request.url.protocol == "https") { "���ص�ַ����ʹ�� HTTPS" }
+            check(request.url.protocol == "https") { "下载地址必须使用 HTTPS" }
             val resume = code == HttpURLConnection.HTTP_PARTIAL
-            check(code == HttpURLConnection.HTTP_OK || resume) { "����Դ���� HTTP $code" }
+            check(code == HttpURLConnection.HTTP_OK || resume) { "下载源返回 HTTP $code" }
             if (resume) check(ModelFiles.validRange(request.getHeaderField("Content-Range"), offset, file.size)) {
-                "�ϵ�������Χ��ƥ��"
+                "断点续传范围不匹配"
             }
             var written = if (resume) offset else 0L
             var lastEmit = 0L
@@ -142,18 +142,18 @@ class ModelManager(context: Context) {
                         currentCoroutineContext().ensureActive()
                         val count = input.read(buffer)
                         if (count < 0) break
-                        check(written + count <= file.size) { "ģ���ļ���С�쳣" }
+                        check(written + count <= file.size) { "模型文件大小异常" }
                         output.write(buffer, 0, count)
                         written += count
                         val now = System.nanoTime()
                         if (now - lastEmit > 300_000_000L) {
-                            mutableStatus.value = Status(running = true, bytes = completed + written, message = "��������")
+                            mutableStatus.value = Status(running = true, bytes = completed + written, message = "正在下载")
                             lastEmit = now
                         }
                     }
                 }
             }
-            check(written == file.size) { "�����жϣ����Լ�������" }
+            check(written == file.size) { "下载中断，可以继续下载" }
         } finally {
             request.disconnect()
             connection = null

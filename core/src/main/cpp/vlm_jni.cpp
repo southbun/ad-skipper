@@ -196,7 +196,7 @@ Java_com_adskipper_core_vlm_VlmEngine_nativeInfer(
         return env->NewStringUTF("");
     }
 
-    // fresh KV per request �� screenshots are independent
+    // fresh KV per request — screenshots are independent
     llama_memory_clear(llama_get_memory(g.lctx), true);
     llama_sampler_reset(g.smpl);
 

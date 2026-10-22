@@ -23,6 +23,6 @@ class VisualFallbackRegressionTest {
     }
 
     @Test fun aSmallLowerSkipLabelIsEligibleForRecognition() {
-        assertTrue(SkipSafety.isOcrCandidate(OcrLine("����", 950, 1800, 150, 60), 1080, 2400))
+        assertTrue(SkipSafety.isOcrCandidate(OcrLine("跳过", 950, 1800, 150, 60), 1080, 2400))
     }
 }

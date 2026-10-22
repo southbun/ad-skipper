@@ -38,10 +38,10 @@ object Routes {
 }
 
 private val tabs = listOf(
-    Triple(Routes.HOME, "��ҳ", Icons.Filled.Home),
-    Triple(Routes.MODEL, "���� AI", Icons.Filled.Psychology),
-    Triple(Routes.SETTINGS, "����", Icons.Filled.Settings),
-    Triple(Routes.STATS, "ͳ��", Icons.Filled.BarChart),
+    Triple(Routes.HOME, "首页", Icons.Filled.Home),
+    Triple(Routes.MODEL, "本地 AI", Icons.Filled.Psychology),
+    Triple(Routes.SETTINGS, "设置", Icons.Filled.Settings),
+    Triple(Routes.STATS, "统计", Icons.Filled.BarChart),
 )
 
 class MainActivity : ComponentActivity() {

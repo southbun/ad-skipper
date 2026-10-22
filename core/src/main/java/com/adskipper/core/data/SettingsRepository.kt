@@ -24,7 +24,7 @@ data class AppSettings(
     val selfTest: Boolean = false,
 ) {
     companion object {
-        val DEFAULT_KEYWORDS = setOf("����", "Skip", "Skip Ad", "�رչ��", "�������", "skip_ad")
+        val DEFAULT_KEYWORDS = setOf("跳过", "Skip", "Skip Ad", "关闭广告", "跳过广告", "skip_ad")
         val DEFAULT_WHITELIST = setOf(
             "com.android.systemui", "com.android.settings", "com.android.launcher3",
             "com.google.android.apps.nexuslauncher", "com.miui.home", "com.huawei.android.launcher",

@@ -53,32 +53,32 @@ fun SettingsScreen() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("����", style = MaterialTheme.typography.headlineMedium)
+        Text("设置", style = MaterialTheme.typography.headlineMedium)
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("���㼶", style = MaterialTheme.typography.titleMedium)
-                SettingSwitch("���ְ�ťʶ��", settings.layer1Enabled) {
+                Text("检测层级", style = MaterialTheme.typography.titleMedium)
+                SettingSwitch("文字按钮识别", settings.layer1Enabled) {
                     scope.launch { app.settingsRepo.setLayer1Enabled(it) }
                 }
-                SettingSwitch("ͼƬ����ʶ��", settings.layer2Enabled) {
+                SettingSwitch("图片文字识别", settings.layer2Enabled) {
                     scope.launch { app.settingsRepo.setLayer2Enabled(it) }
                 }
-                SettingSwitch("�Ӿ���ťʶ��YOLO��", settings.layer3Enabled) {
+                SettingSwitch("视觉按钮识别（YOLO）", settings.layer3Enabled) {
                     scope.launch { app.settingsRepo.setLayer3Enabled(it) }
                 }
-                SettingSwitch("���ش�ģ�Ͷ���", settings.vlmEnabled) {
+                SettingSwitch("本地大模型兜底", settings.vlmEnabled) {
                     scope.launch { app.settingsRepo.setVlmEnabled(it) }
                 }
-                Text("��ģ�������ڡ����� AI��ҳ�����ء�ʶ��ֻ���ֻ��Ͻ��С�", style = MaterialTheme.typography.bodySmall)
+                Text("大模型需先在“本地 AI”页面下载。识别只在手机上进行。", style = MaterialTheme.typography.bodySmall)
             }
         }
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("�ؼ���", style = MaterialTheme.typography.titleMedium)
+                Text("关键词", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    settings.keywords.joinToString("��"),
+                    settings.keywords.joinToString("、"),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 var input by remember { mutableStateOf("") }
@@ -91,7 +91,7 @@ fun SettingsScreen() {
                         onValueChange = { input = it },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
-                        placeholder = { Text("���ӹؼ���") },
+                        placeholder = { Text("添加关键词") },
                         keyboardActions = KeyboardActions(onDone = { }),
                     )
                     Button(onClick = {
@@ -102,25 +102,25 @@ fun SettingsScreen() {
                             }
                             input = ""
                         }
-                    }) { Text("����") }
+                    }) { Text("添加") }
                 }
                 if (settings.keywords.isNotEmpty()) {
                     Button(onClick = {
                         scope.launch {
                             app.settingsRepo.setKeywords(settings.keywords.toList().dropLast(1).toSet())
                         }
-                    }) { Text("�Ƴ����һ��") }
+                    }) { Text("移除最后一个") }
                 }
             }
         }
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("����", style = MaterialTheme.typography.titleMedium)
-                SettingSwitch("��ʾ���״̬", settings.debugOverlay) {
+                Text("其他", style = MaterialTheme.typography.titleMedium)
+                SettingSwitch("显示点击状态", settings.debugOverlay) {
                     scope.launch { app.settingsRepo.setDebugOverlay(it) }
                 }
-                SettingSwitch("�Բ�ģʽ���Ա� App ��Ч������ģ������ԣ�", settings.selfTest) {
+                SettingSwitch("自测模式（对本 App 生效，用于模拟广告测试）", settings.selfTest) {
                     scope.launch { app.settingsRepo.setSelfTest(it) }
                 }
             }
@@ -128,7 +128,7 @@ fun SettingsScreen() {
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("����������������Ӧ�ã�", style = MaterialTheme.typography.titleMedium)
+                Text("白名单（不跳过的应用）", style = MaterialTheme.typography.titleMedium)
                 WhitelistPicker(
                     whitelist = settings.whitelist,
                     onChange = { scope.launch { app.settingsRepo.setWhitelist(it) } },
@@ -167,7 +167,7 @@ private fun WhitelistPicker(whitelist: Set<String>, onChange: (Set<String>) -> U
         }
     }
     if (apps.isEmpty()) {
-        Text("����Ӧ���б���", style = MaterialTheme.typography.bodySmall)
+        Text("加载应用列表…", style = MaterialTheme.typography.bodySmall)
         return
     }
     Column {

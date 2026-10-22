@@ -34,28 +34,28 @@ fun ModelScreen() {
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("���� AI", style = MaterialTheme.typography.headlineMedium)
-        Text("����ʶ��δ�ҵ���ťʱ���ɴ�ģ�ͷ������档��ͼֻ���ֻ��ڴ����������˺Ż� Token��")
+        Text("本地 AI", style = MaterialTheme.typography.headlineMedium)
+        Text("快速识别未找到按钮时，由大模型分析画面。截图只在手机内处理，无需账号或 Token。")
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("InternVL3-2B", style = MaterialTheme.typography.titleLarge)
-                Text("ģ��Լ 1.5GB���������� Wi-Fi ���ء�������ɺ������ʶ��")
+                Text("模型约 1.5GB，建议连接 Wi-Fi 下载。下载完成后可离线识别。")
                 if (status.running) {
                     LinearProgressIndicator(
                         progress = { (status.bytes.toFloat() / manager.totalBytes).coerceIn(0f, 1f) },
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Text("${status.message}  %.0f / %.0f MB".format(status.bytes / 1048576f, manager.totalBytes / 1048576f))
-                    OutlinedButton(onClick = manager::cancelDownload) { Text("��ͣ����") }
+                    OutlinedButton(onClick = manager::cancelDownload) { Text("暂停下载") }
                 } else if (!status.downloaded) {
                     status.message.takeIf { it.isNotEmpty() }?.let { Text(it) }
-                    Button(onClick = manager::startDownload) { Text("���ر���ģ��") }
+                    Button(onClick = manager::startDownload) { Text("下载本地模型") }
                 } else {
                     Text(when (engine) {
-                        VlmEngine.State.READY -> "ģ���Ѿ���"
-                        VlmEngine.State.LOADING -> "���ڼ���ģ�͡�"
-                        VlmEngine.State.ERROR -> "ģ�ͼ���ʧ�ܣ�����ʶ���Կ�ʹ��"
-                        VlmEngine.State.NOT_LOADED -> "ģ�������أ���δ����"
+                        VlmEngine.State.READY -> "模型已就绪"
+                        VlmEngine.State.LOADING -> "正在加载模型…"
+                        VlmEngine.State.ERROR -> "模型加载失败，快速识别仍可使用"
+                        VlmEngine.State.NOT_LOADED -> "模型已下载，尚未加载"
                     })
                     if (engine == VlmEngine.State.NOT_LOADED || engine == VlmEngine.State.ERROR) {
                         Button(onClick = {
@@ -63,11 +63,11 @@ fun ModelScreen() {
                                 app.settingsRepo.setVlmEnabled(true)
                                 manager.loadModel()
                             }
-                        }) { Text("���ز�����") }
+                        }) { Text("加载并启用") }
                     }
                 }
             }
         }
-        Text("�״μ��غ�ʶ���ʱ�����ֻ��ϲ��ԡ�ֻ��Ӧ���л���ǰ̨��Ķ�ʱ����ʶ��", style = MaterialTheme.typography.bodySmall)
+        Text("首次加载和识别耗时请在手机上测试。只在应用切换到前台后的短时间内识别。", style = MaterialTheme.typography.bodySmall)
     }
 }

@@ -33,9 +33,9 @@ class SkipSafetyTest {
     }
 
     @Test fun smallSkipLabelsCanBeRecognizedAwayFromCorners() {
-        val side = OcrLine("���� 5", 950, 1800, 150, 60)
+        val side = OcrLine("跳过 5", 950, 1800, 150, 60)
         assertTrue(SkipSafety.isOcrCandidate(side, 1080, 2400))
-        assertTrue(SkipSafety.isOcrCandidate(side.copy(text = "����"), 1080, 2400))
+        assertTrue(SkipSafety.isOcrCandidate(side.copy(text = "跳过"), 1080, 2400))
         assertTrue(SkipSafety.isOcrCandidate(side.copy(centerX = 540), 1080, 2400))
         assertFalse(SkipSafety.isOcrCandidate(side.copy(width = 600), 1080, 2400))
         assertFalse(SkipSafety.isOcrCandidate(side.copy(centerX = 1080), 1080, 2400))
@@ -51,7 +51,7 @@ class SkipSafetyTest {
     }
 
     @Test fun screenshotSkipCountdownFitsTheOriginalCorner() {
-        val line = OcrLine("���� 2", 1005, 181, 200, 75)
+        val line = OcrLine("跳过 2", 1005, 181, 200, 75)
         assertTrue(SkipSafety.isCorner(1005f, 181f, 1200, 2608))
         assertTrue(SkipSafety.isOcrCandidate(line, 1200, 2608))
     }

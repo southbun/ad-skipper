@@ -8,7 +8,7 @@ import org.junit.Test
 class DetectionPipelineTest {
     private val allOn = AppSettings(layer3Enabled = true)
     private val point = 950f to 100f
-    private val badge = listOf(OcrLine("���", 40, 100, 40, 30))
+    private val badge = listOf(OcrLine("广告", 40, 100, 40, 30))
 
     @Test fun nodeHitNeedsAdEvidence() = runTest {
         val pipeline = DetectionPipeline<Unit>(
@@ -77,7 +77,7 @@ class DetectionPipelineTest {
     }
 
     @Test fun explicitSkipCountdownWithoutAdBadgeProducesCandidate() = runTest {
-        val lines = listOf(OcrLine("���� 2", 1005, 181, 200, 75))
+        val lines = listOf(OcrLine("跳过 2", 1005, 181, 200, 75))
         val pipeline = DetectionPipeline<Unit>(
             l1 = { _, _ -> null },
             l2 = { _, _ -> DetectionPipeline.OcrPass(1005f to 181f, lines) }, clock = { 0L },
@@ -89,7 +89,7 @@ class DetectionPipelineTest {
     }
 
     @Test fun unrelatedNumberCannotProveABareSkipLabel() = runTest {
-        val lines = listOf(OcrLine("����", 950, 100, 100, 40), OcrLine("2", 50, 600, 30, 40))
+        val lines = listOf(OcrLine("跳过", 950, 100, 100, 40), OcrLine("2", 50, 600, 30, 40))
         val pipeline = DetectionPipeline<Unit>(
             l1 = { _, _ -> null }, l2 = { _, _ -> DetectionPipeline.OcrPass(point, lines) }, clock = { 0L },
         )
@@ -97,7 +97,7 @@ class DetectionPipelineTest {
     }
 
     @Test fun businessTextWithANumberIsNotAdEvidence() = runTest {
-        val lines = listOf(OcrLine("������ 2", 950, 100, 100, 40))
+        val lines = listOf(OcrLine("跳过绑定 2", 950, 100, 100, 40))
         val pipeline = DetectionPipeline<Unit>(
             l1 = { _, _ -> null }, l2 = { _, _ -> DetectionPipeline.OcrPass(point, lines) }, clock = { 0L },
         )
@@ -105,7 +105,7 @@ class DetectionPipelineTest {
     }
 
     @Test fun sideCountdownNeedsProofEvenWhenThereIsAnAdBadge() = runTest {
-        val lines = badge + OcrLine("���� 5", 950, 1200, 100, 40)
+        val lines = badge + OcrLine("跳过 5", 950, 1200, 100, 40)
         val pipeline = DetectionPipeline<Unit>(
             l1 = { _, _ -> null },
             l2 = { _, _ -> DetectionPipeline.OcrPass(950f to 1200f, lines, requiresCountdownProof = true) },
@@ -115,7 +115,7 @@ class DetectionPipelineTest {
     }
 
     @Test fun imageFallbackDoesNotDependOnACountdown() = runTest {
-        val lines = listOf(OcrLine("���� 5", 950, 100, 100, 40))
+        val lines = listOf(OcrLine("跳过 5", 950, 100, 100, 40))
         val pipeline = DetectionPipeline<Unit>(
             l1 = { _, _ -> null }, l2 = { _, _ -> DetectionPipeline.OcrPass(null, lines) },
             l3yolo = { point }, clock = { 0L },

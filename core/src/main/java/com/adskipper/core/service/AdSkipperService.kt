@@ -67,7 +67,7 @@ class AdSkipperService : AccessibilityService() {
     private var excludedPackages = emptySet<String>()
     private var selfLabels = emptySet<String>()
     private var selfTestVisible = false
-    private var lastMissReason = "δ�ҵ�����������������ť"
+    private var lastMissReason = "未找到符合条件的跳过按钮"
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -135,13 +135,13 @@ class AdSkipperService : AccessibilityService() {
         feedbackJob?.cancel()
         overlay.dismiss()
         pollingId = session.id
-        lastMissReason = "δ�ҵ�����������������ť"
+        lastMissReason = "未找到符合条件的跳过按钮"
         pollJob = scope.launch {
             val wakeLock = getSystemService(PowerManager::class.java)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "adskipper:splash")
             try {
                 wakeLock.acquire(8_000L)
-                if (settings.debugOverlay) overlay.update("����ʶ����")
+                if (settings.debugOverlay) overlay.update("正在识别开屏")
                 delay(500)
                 var attempted = false
                 while (isActive && sessions.isCurrent(session, SystemClock.elapsedRealtime())) {
@@ -206,7 +206,7 @@ class AdSkipperService : AccessibilityService() {
                 }
             }
             if (sessions.isCurrent(session, SystemClock.elapsedRealtime()) && result?.target == null) {
-                lastMissReason = result?.missReason ?: "����ʶ��ʱ"
+                lastMissReason = result?.missReason ?: "画面识别超时"
             }
             return result?.target
         }
@@ -215,7 +215,7 @@ class AdSkipperService : AccessibilityService() {
             val sampledAt = SystemClock.elapsedRealtime()
             currentCoroutineContext().ensureActive()
             if (revision != settingsRevision || validRoot(session, windowId) == null) return false
-            if (first.requiresCountdownProof && settings.debugOverlay) overlay.update("����ȷ����������ʱ")
+            if (first.requiresCountdownProof && settings.debugOverlay) overlay.update("正在确认跳过倒计时")
             delay(if (first.requiresCountdownProof) 1_050 else 120)
             val freshRoot = validRoot(session, windowId) ?: return false
             if (!freshRoot.refresh()) return false
@@ -223,7 +223,7 @@ class AdSkipperService : AccessibilityService() {
                 val source = frames.lastOrNull() ?: return false
                 val fresh = ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add) ?: return false
                 if (!FrameVerifier.matches(source, fresh, first)) {
-                    lastMissReason = "�����ѱ仯���ѷ����ɰ�ť����"
+                    lastMissReason = "画面已变化，已放弃旧按钮坐标"
                     return false
                 }
                 first
@@ -231,7 +231,7 @@ class AdSkipperService : AccessibilityService() {
             currentCoroutineContext().ensureActive()
             val liveRoot = validRoot(session, windowId) ?: return false
             if (!SkipSafety.canConfirmTarget(first, verified, SystemClock.elapsedRealtime() - sampledAt)) {
-                lastMissReason = "��ť�򵹼�ʱδͨ������"
+                lastMissReason = "按钮或倒计时未通过复查"
                 return false
             }
             if (revision != settingsRevision) return false
@@ -267,7 +267,7 @@ class AdSkipperService : AccessibilityService() {
                 showClickFeedback(session, windowId, revision, verified, viaNode)
                 stats.record(session.packageName, verified.layer.name, SystemClock.elapsedRealtime() - started)
             } else if (settings.debugOverlay) {
-                overlay.update("���δִ�У�${verified.layer}")
+                overlay.update("点击未执行：${verified.layer}")
             }
             true
         } catch (cancelled: CancellationException) {
@@ -282,7 +282,7 @@ class AdSkipperService : AccessibilityService() {
     private fun showClickFeedback(session: SplashSessionTracker.Session, windowId: Int, revision: Long,
                                  target: SkipTarget, viaNode: Boolean) {
         if (!settings.debugOverlay) return
-        overlay.update("�ѷ���${if (viaNode) "�ؼ�" else "����"}�����${target.layer}")
+        overlay.update("已发送${if (viaNode) "控件" else "触摸"}点击：${target.layer}")
         if (target.layer != SkipLayer.L1_NODE) return
         feedbackJob?.cancel()
         feedbackJob = scope.launch {
@@ -292,16 +292,16 @@ class AdSkipperService : AccessibilityService() {
             val message = try {
                 val after = rootInActiveWindow
                 if (after == null || !after.refresh()) {
-                    "����ѷ��ͣ�ҳ��״̬��ȷ��"
+                    "点击已发送，页面状态待确认"
                 } else if (!SkipSafety.sameWindow(session.packageName, windowId, after.packageName?.toString(), after.windowId)) {
-                    "�����ҳ�����л�"
+                    "点击后页面已切换"
                 } else if (NodeMatcher.findSkipNode(after, settings.keywords, selfLabels) != null) {
-                    "��ť���ڣ�δȷ������"
+                    "按钮仍在，未确认跳过"
                 } else {
-                    "δ��ʶ��������ť"
+                    "未再识别到跳过按钮"
                 }
             } catch (_: Exception) {
-                "����ѷ��ͣ�ҳ��״̬��ȷ��"
+                "点击已发送，页面状态待确认"
             }
             overlay.update(message)
         }
@@ -344,9 +344,9 @@ class AdSkipperService : AccessibilityService() {
 
     private fun startNotification() {
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("keepalive", "����״̬", NotificationManager.IMPORTANCE_MIN))
+        manager.createNotificationChannel(NotificationChannel("keepalive", "运行状态", NotificationManager.IMPORTANCE_MIN))
         val notification = Notification.Builder(this, "keepalive")
-            .setSmallIcon(android.R.drawable.ic_menu_view).setContentTitle("��������������").setOngoing(true).build()
+            .setSmallIcon(android.R.drawable.ic_menu_view).setContentTitle("开屏跳过运行中").setOngoing(true).build()
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
