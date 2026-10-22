@@ -50,4 +50,36 @@ class NodeMatcherTest {
         shadowOf(button).addChild(node(labelBox, "跳过"))
         assertNull(NodeMatcher.findSkipNode(root, keywords))
     }
+
+    @Test fun matchedTextKeepsItsParentClickAction() {
+        val root = node(screen)
+        val button = node(buttonBox, clickable = true)
+        shadowOf(root).addChild(button)
+        shadowOf(button).addChild(node(labelBox, "跳过 5"))
+        var receivedAction = -1
+        shadowOf(button).setOnPerformActionListener { action, _ ->
+            receivedAction = action
+            true
+        }
+        val target = NodeMatcher.findSkipNodeInfo(root, keywords)
+        assertNotNull(target)
+        assertTrue(target!!.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+        assertEquals(AccessibilityNodeInfo.ACTION_CLICK, receivedAction)
+    }
+
+    @Test fun fullScreenClickableParentIsRejected() {
+        val root = node(screen)
+        val container = node(screen, clickable = true)
+        shadowOf(root).addChild(container)
+        shadowOf(container).addChild(node(labelBox, "跳过"))
+        assertNull(NodeMatcher.findSkipNodeInfo(root, keywords))
+    }
+
+    @Test fun parentFromAnotherPackageIsRejected() {
+        val root = node(screen)
+        val button = node(buttonBox, clickable = true).apply { packageName = "other.app" }
+        shadowOf(root).addChild(button)
+        shadowOf(button).addChild(node(labelBox, "跳过"))
+        assertNull(NodeMatcher.findSkipNodeInfo(root, keywords))
+    }
 }

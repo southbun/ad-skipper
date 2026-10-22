@@ -5,11 +5,16 @@ import android.view.accessibility.AccessibilityNodeInfo
 
 object NodeMatcher {
     fun findSkipNode(root: AccessibilityNodeInfo?, keywords: Collection<String>, excluded: Collection<String> = emptySet()): Rect? {
+        val node = findSkipNodeInfo(root, keywords, excluded) ?: return null
+        return Rect().also(node::getBoundsInScreen)
+    }
+
+    fun findSkipNodeInfo(root: AccessibilityNodeInfo?, keywords: Collection<String>, excluded: Collection<String> = emptySet()): AccessibilityNodeInfo? {
         root ?: return null
         val screen = Rect().also(root::getBoundsInScreen)
         val queue = ArrayDeque<AccessibilityNodeInfo>()
-        val clickable = ArrayList<Rect>()
-        val other = ArrayList<Rect>()
+        val clickable = ArrayList<AccessibilityNodeInfo>()
+        val other = ArrayList<AccessibilityNodeInfo>()
         queue.add(root)
         var visited = 0
         while (queue.isNotEmpty() && visited++ < 300) {
@@ -18,17 +23,40 @@ object NodeMatcher {
                     KeywordMatcher.matches(node.text?.toString(), keywords, excluded) != null ||
                     KeywordMatcher.matches(node.contentDescription?.toString(), keywords, excluded) != null ||
                     KeywordMatcher.matches(node.viewIdResourceName?.substringAfterLast('/'), keywords) != null)) {
-                val box = Rect().also(node::getBoundsInScreen)
-                if (!box.isEmpty && screen.contains(box) && box.width() <= screen.width() * 0.4f &&
-                    box.height() <= screen.height() * 0.12f &&
-                    box.width().toLong() * box.height() <= screen.width().toLong() * screen.height() / 20 &&
-                    SkipSafety.isCorner(box.exactCenterX() - screen.left, box.exactCenterY() - screen.top, screen.width(), screen.height())) {
-                    (if (node.isClickable) clickable else other).add(box)
+                val target = clickTarget(node, root, screen)
+                if (target != null) {
+                    (if (target.isClickable) clickable else other).add(target)
                 }
             }
             for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
         }
         return clickable.firstOrNull() ?: other.firstOrNull()
+    }
+
+    private fun safeBounds(node: AccessibilityNodeInfo, screen: Rect): Rect? {
+        val box = Rect().also(node::getBoundsInScreen)
+        return box.takeIf {
+            !it.isEmpty && screen.contains(it) && it.width() <= screen.width() * 0.4f &&
+                it.height() <= screen.height() * 0.12f &&
+                it.width().toLong() * it.height() <= screen.width().toLong() * screen.height() / 20 &&
+                SkipSafety.isCorner(it.exactCenterX() - screen.left, it.exactCenterY() - screen.top, screen.width(), screen.height())
+        }
+    }
+
+    private fun clickTarget(node: AccessibilityNodeInfo, root: AccessibilityNodeInfo, screen: Rect): AccessibilityNodeInfo? {
+        val label = safeBounds(node, screen) ?: return null
+        var current = node
+        repeat(4) {
+            if (!current.isEnabled || !current.isVisibleToUser || current.windowId != root.windowId ||
+                (current.packageName != null && current.packageName != root.packageName)) return null
+            if (current.isClickable) {
+                return current.takeIf { safeBounds(it, screen)?.contains(label) == true }
+            }
+            val parent = current.parent ?: return node
+            if (parent == root) return node.takeIf { parent.isEnabled }
+            current = parent
+        }
+        return null
     }
 
     fun hasAdEvidence(root: AccessibilityNodeInfo?): Boolean {

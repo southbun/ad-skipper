@@ -12,9 +12,11 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Path
+import android.graphics.Rect
 import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
+import android.view.ViewConfiguration
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.content.ContextCompat
@@ -23,6 +25,7 @@ import com.adskipper.core.data.SettingsRepository
 import com.adskipper.core.data.StatsRepository
 import com.adskipper.core.detect.DetectionPipeline
 import com.adskipper.core.detect.NodeMatcher
+import com.adskipper.core.detect.SkipLayer
 import com.adskipper.core.detect.SkipSafety
 import com.adskipper.core.detect.SkipTarget
 import com.adskipper.core.detect.SplashSessionTracker
@@ -50,6 +53,7 @@ class AdSkipperService : AccessibilityService() {
     private var settings = AppSettings(masterEnabled = false)
     private var settingsRevision = 0L
     private var pollJob: Job? = null
+    private var feedbackJob: Job? = null
     private var pollingId: Long? = null
     private lateinit var stats: StatsRepository
     private lateinit var overlay: DebugOverlay
@@ -114,6 +118,8 @@ class AdSkipperService : AccessibilityService() {
         }
         if (pollingId == session.id) return
         pollJob?.cancel()
+        feedbackJob?.cancel()
+        overlay.dismiss()
         pollingId = session.id
         pollJob = scope.launch {
             val wakeLock = getSystemService(PowerManager::class.java)
@@ -138,6 +144,8 @@ class AdSkipperService : AccessibilityService() {
         pollJob?.cancel()
         pollJob = null
         pollingId = null
+        feedbackJob?.cancel()
+        feedbackJob = null
     }
 
     private fun validRoot(session: SplashSessionTracker.Session, windowId: Int? = null): AccessibilityNodeInfo? {
@@ -181,15 +189,41 @@ class AdSkipperService : AccessibilityService() {
             if (!freshRoot.refresh()) return false
             val verified = pass(freshRoot) ?: return false
             currentCoroutineContext().ensureActive()
-            if (!SkipSafety.sameTarget(first, verified) || revision != settingsRevision ||
-                validRoot(session, windowId) == null) return false
+            val liveRoot = validRoot(session, windowId) ?: return false
+            if (!SkipSafety.sameTarget(first, verified) || revision != settingsRevision) return false
 
-            // Consume before dispatch: one attempt, even if the gesture is cancelled.
+            val node = if (verified.layer == SkipLayer.L1_NODE) {
+                NodeMatcher.findSkipNodeInfo(liveRoot, snapshot.keywords, selfLabels)?.takeIf {
+                    if (!it.refresh() || !it.isEnabled || !it.isVisibleToUser ||
+                        !SkipSafety.sameWindow(session.packageName, windowId, it.packageName?.toString(), it.windowId)) {
+                        false
+                    } else {
+                        val box = Rect().also(it::getBoundsInScreen)
+                        SkipSafety.sameTarget(verified, verified.copy(x = box.exactCenterX(), y = box.exactCenterY()))
+                    }
+                } ?: return false
+            } else null
+            if (revision != settingsRevision || validRoot(session, windowId) == null) return false
+
+            // Consume before dispatch; fall back only when the node action was rejected.
             sessions.finish(session)
-            val completed = performClick(verified.x, verified.y)
+            val viaNode = node?.isClickable == true && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            val completed = viaNode || run {
+                currentCoroutineContext().ensureActive()
+                val current = rootInActiveWindow
+                if (revision != settingsRevision || !settings.masterEnabled ||
+                    SystemClock.elapsedRealtime() - session.startedAt >= 8_000L ||
+                    !getSystemService(PowerManager::class.java).isInteractive || current == null ||
+                    !SkipSafety.sameWindow(session.packageName, windowId, current.packageName?.toString(), current.windowId)) {
+                    return true
+                }
+                performClick(verified.x, verified.y)
+            }
             if (completed) {
+                showClickFeedback(session, windowId, revision, verified, viaNode)
                 stats.record(session.packageName, verified.layer.name, SystemClock.elapsedRealtime() - started)
-                if (settings.debugOverlay) overlay.update("已完成点击：${verified.layer}")
+            } else if (settings.debugOverlay) {
+                overlay.update("点击未执行：${verified.layer}")
             }
             true
         } catch (cancelled: CancellationException) {
@@ -199,10 +233,38 @@ class AdSkipperService : AccessibilityService() {
         }
     }
 
+    private fun showClickFeedback(session: SplashSessionTracker.Session, windowId: Int, revision: Long,
+                                 target: SkipTarget, viaNode: Boolean) {
+        if (!settings.debugOverlay) return
+        overlay.update("已发送${if (viaNode) "控件" else "触摸"}点击：${target.layer}")
+        if (target.layer != SkipLayer.L1_NODE) return
+        feedbackJob?.cancel()
+        feedbackJob = scope.launch {
+            delay(700)
+            if (revision != settingsRevision || !settings.debugOverlay ||
+                !getSystemService(PowerManager::class.java).isInteractive) return@launch
+            val message = try {
+                val after = rootInActiveWindow
+                if (after == null || !after.refresh()) {
+                    "点击已发送，页面状态待确认"
+                } else if (!SkipSafety.sameWindow(session.packageName, windowId, after.packageName?.toString(), after.windowId)) {
+                    "点击后页面已切换"
+                } else if (NodeMatcher.findSkipNode(after, settings.keywords, selfLabels) != null) {
+                    "按钮仍在，未确认跳过"
+                } else {
+                    "未再识别到跳过按钮"
+                }
+            } catch (_: Exception) {
+                "点击已发送，页面状态待确认"
+            }
+            overlay.update(message)
+        }
+    }
+
     private suspend fun performClick(x: Float, y: Float): Boolean = withTimeoutOrNull(1_000L) {
         suspendCancellableCoroutine { continuation ->
             val gesture = GestureDescription.Builder().addStroke(
-                GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0, 50),
+                GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0, ViewConfiguration.getTapTimeout().toLong()),
             ).build()
             val callback = object : GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) {

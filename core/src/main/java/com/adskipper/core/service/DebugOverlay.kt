@@ -16,6 +16,7 @@ class DebugOverlay(private val service: AccessibilityService) {
 
     private val handler = Handler(Looper.getMainLooper())
     private var view: TextView? = null
+    private val hide = Runnable { removeView() }
 
     fun update(text: String) {
         handler.post {
@@ -38,6 +39,8 @@ class DebugOverlay(private val service: AccessibilityService) {
                     view = this
                 }
                 v.text = text
+                handler.removeCallbacks(hide)
+                handler.postDelayed(hide, 4_000)
             } catch (t: Throwable) {
                 Timber.w(t, "overlay update failed")
             }
@@ -46,14 +49,19 @@ class DebugOverlay(private val service: AccessibilityService) {
 
     fun dismiss() {
         handler.post {
-            view?.let {
-                try {
-                    service.getSystemService(WindowManager::class.java).removeView(it)
-                } catch (t: Throwable) {
-                    Timber.w(t, "overlay dismiss failed")
-                }
-            }
-            view = null
+            handler.removeCallbacks(hide)
+            removeView()
         }
+    }
+
+    private fun removeView() {
+        view?.let {
+            try {
+                service.getSystemService(WindowManager::class.java).removeView(it)
+            } catch (t: Throwable) {
+                Timber.w(t, "overlay dismiss failed")
+            }
+        }
+        view = null
     }
 }
