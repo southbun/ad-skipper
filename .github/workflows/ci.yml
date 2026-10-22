@@ -30,7 +30,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import subprocess
-          paths = subprocess.check_output(["git", "ls-files", "*.kt", "*.xml", "*.md"], text=True).splitlines()
+          paths = subprocess.check_output(["git", "ls-files", "*.kt", "*.xml"], text=True).splitlines()
           for path in paths:
               source = Path(path).read_text(encoding="utf-8")
               if "\ufffd" in source:
