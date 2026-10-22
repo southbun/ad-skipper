@@ -7,4 +7,6 @@ data class SkipTarget(
     val y: Float,
     val layer: SkipLayer,
     val detail: String = "",
+    val countdown: Int? = null,
+    val requiresCountdownProof: Boolean = false,
 )

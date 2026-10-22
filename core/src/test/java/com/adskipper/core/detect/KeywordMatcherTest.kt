@@ -33,4 +33,15 @@ class KeywordMatcherTest {
             assertFalse(text, KeywordMatcher.isAdEvidence(text))
         }
     }
+
+    @Test fun countdownRequiresAnExactSkipLabel() {
+        for (text in listOf("跳过 2", "跳过2", "跳过(2s)", "跳过（2秒）", "2s Skip", "Skip | 2")) {
+            assertEquals(text, 2, KeywordMatcher.countdown(text))
+        }
+        assertEquals(0, KeywordMatcher.countdown("跳过 0"))
+        assertEquals(30, KeywordMatcher.countdown("跳过 30s"))
+        for (text in listOf("跳过", "2", "2s", "跳过绑定 2", "Skip login 2", "跳过 99", "3 跳过 2")) {
+            assertNull(text, KeywordMatcher.countdown(text))
+        }
+    }
 }

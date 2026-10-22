@@ -82,6 +82,44 @@ class DetectionPipelineTest {
             l1 = { _, _ -> null },
             l2 = { _, _ -> DetectionPipeline.OcrPass(1005f to 181f, lines) }, clock = { 0L },
         )
-        assertNotNull(pipeline.detect(null, { Unit }, AppSettings()).target)
+        val target = pipeline.detect(null, { Unit }, AppSettings()).target
+        assertNotNull(target)
+        assertEquals(2, target?.countdown)
+        assertTrue(target!!.requiresCountdownProof)
+    }
+
+    @Test fun unrelatedNumberCannotProveABareSkipLabel() = runTest {
+        val lines = listOf(OcrLine("跳过", 950, 100, 100, 40), OcrLine("2", 50, 600, 30, 40))
+        val pipeline = DetectionPipeline<Unit>(
+            l1 = { _, _ -> null }, l2 = { _, _ -> DetectionPipeline.OcrPass(point, lines) }, clock = { 0L },
+        )
+        assertNull(pipeline.detect(null, { Unit }, AppSettings()).target)
+    }
+
+    @Test fun businessTextWithANumberIsNotAdEvidence() = runTest {
+        val lines = listOf(OcrLine("跳过绑定 2", 950, 100, 100, 40))
+        val pipeline = DetectionPipeline<Unit>(
+            l1 = { _, _ -> null }, l2 = { _, _ -> DetectionPipeline.OcrPass(point, lines) }, clock = { 0L },
+        )
+        assertNull(pipeline.detect(null, { Unit }, AppSettings()).target)
+    }
+
+    @Test fun sideCountdownNeedsProofEvenWhenThereIsAnAdBadge() = runTest {
+        val lines = badge + OcrLine("跳过 5", 950, 1200, 100, 40)
+        val pipeline = DetectionPipeline<Unit>(
+            l1 = { _, _ -> null },
+            l2 = { _, _ -> DetectionPipeline.OcrPass(950f to 1200f, lines, requiresCountdownProof = true) },
+            clock = { 0L },
+        )
+        assertTrue(pipeline.detect(null, { Unit }, AppSettings()).target!!.requiresCountdownProof)
+    }
+
+    @Test fun countdownElsewhereCannotUnlockImageButtonClicks() = runTest {
+        val lines = listOf(OcrLine("跳过 5", 950, 100, 100, 40))
+        val pipeline = DetectionPipeline<Unit>(
+            l1 = { _, _ -> null }, l2 = { _, _ -> DetectionPipeline.OcrPass(null, lines) },
+            l3yolo = { error("Unverified countdown must not enable YOLO") }, clock = { 0L },
+        )
+        assertNull(pipeline.detect(null, { Unit }, allOn).target)
     }
 }

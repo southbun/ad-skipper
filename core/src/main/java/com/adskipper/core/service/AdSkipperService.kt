@@ -61,6 +61,7 @@ class AdSkipperService : AccessibilityService() {
     private var excludedPackages = emptySet<String>()
     private var selfLabels = emptySet<String>()
     private var selfTestVisible = false
+    private var lastMissReason = "未找到符合条件的跳过按钮"
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -121,16 +122,24 @@ class AdSkipperService : AccessibilityService() {
         feedbackJob?.cancel()
         overlay.dismiss()
         pollingId = session.id
+        lastMissReason = "未找到符合条件的跳过按钮"
         pollJob = scope.launch {
             val wakeLock = getSystemService(PowerManager::class.java)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "adskipper:splash")
             try {
                 wakeLock.acquire(8_000L)
+                if (settings.debugOverlay) overlay.update("正在识别开屏")
                 delay(500)
+                var attempted = false
                 while (isActive && sessions.isCurrent(session, SystemClock.elapsedRealtime())) {
-                    if (detectAndClick(session)) break
+                    if (detectAndClick(session)) {
+                        attempted = true
+                        break
+                    }
                     delay(750)
                 }
+                if (!attempted && isActive && settings.debugOverlay &&
+                    SystemClock.elapsedRealtime() - session.startedAt >= 8_000L) overlay.update(lastMissReason)
             } finally {
                 sessions.finish(session)
                 if (wakeLock.isHeld) wakeLock.release()
@@ -169,28 +178,38 @@ class AdSkipperService : AccessibilityService() {
             val remaining = sessions.remainingMs(session, SystemClock.elapsedRealtime())
             if (remaining <= 0) return null
             val evidence = NodeMatcher.hasAdEvidence(node)
-            return withTimeoutOrNull(remaining) {
+            val result = withTimeoutOrNull(remaining) {
                 withContext(Dispatchers.Default) {
                     pipeline.detect(
                         node,
                         { ScreenshotCapturer.capture(this@AdSkipperService) },
                         snapshot,
                         nodeAdEvidence = evidence,
-                    ).target
+                    )
                 }
             }
+            if (sessions.isCurrent(session, SystemClock.elapsedRealtime()) && result?.target == null) {
+                lastMissReason = result?.missReason ?: "画面识别超时"
+            }
+            return result?.target
         }
         return try {
             val first = pass(root) ?: return false
+            val sampledAt = SystemClock.elapsedRealtime()
             currentCoroutineContext().ensureActive()
             if (revision != settingsRevision || validRoot(session, windowId) == null) return false
-            delay(120)
+            if (first.requiresCountdownProof && settings.debugOverlay) overlay.update("正在确认跳过倒计时")
+            delay(if (first.requiresCountdownProof) 1_050 else 120)
             val freshRoot = validRoot(session, windowId) ?: return false
             if (!freshRoot.refresh()) return false
             val verified = pass(freshRoot) ?: return false
             currentCoroutineContext().ensureActive()
             val liveRoot = validRoot(session, windowId) ?: return false
-            if (!SkipSafety.sameTarget(first, verified) || revision != settingsRevision) return false
+            if (!SkipSafety.canConfirmTarget(first, verified, SystemClock.elapsedRealtime() - sampledAt)) {
+                lastMissReason = "按钮或倒计时未通过复查"
+                return false
+            }
+            if (revision != settingsRevision) return false
 
             val node = if (verified.layer == SkipLayer.L1_NODE) {
                 NodeMatcher.findSkipNodeInfo(liveRoot, snapshot.keywords, selfLabels)?.takeIf {

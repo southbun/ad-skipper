@@ -7,10 +7,11 @@
 - Android 11+、arm64-v8a；可与原版并存，包名 `com.southbun.adskipper`。
 - App 进入前台后最多检查 8 秒；同一 App 的内容变化不会延长窗口。
 - 默认开启控件树与随包中文 OCR，图片按钮检测（YOLO）默认关闭，可在设置开启。
-- 所有层都要求当前画面的广告证据；关键词采用完整标签匹配并允许倒计时，不匹配“跳过绑定”“跳过教程”等业务文字。
-- 候选必须位于屏幕角落；发现后重新识别一次，点击前再次核对包名、窗口、设置与会话时限。
+- 控件和图片模型要求当前画面的广告证据；OCR 在没有广告标识时可提出完整“跳过/Skip + 数字”候选，必须复查到同一位置的倒计时实际递减后才点击。关键词不匹配“跳过绑定”“跳过教程”等业务文字。
+- 普通候选限于角落；小尺寸的边缘倒计时按钮可位于更低的位置，仍须验证倒计时递减。点击前核对包名、窗口、设置与 8 秒会话时限。
 - L1 保留按钮控件，优先调用控件点击；文字位于按钮内部时查找就近且大小合理的可点击父控件，跳过不可用按钮。控件拒绝点击时才退回触摸，不在接受后重复点击。
 - 每次前台会话最多接受一次点击；统计显示“已发送点击”。L1 点击后复查按钮是否仍在，状态提示 4 秒后自动隐藏。
+- 开启“显示点击状态”后会提示正在识别、正在确认倒计时；8 秒内未点击时给出未识别或复查失败的原因。
 - 桌面、系统设置与浏览器默认不操作。
 - 截图仅用于本地识别，不写入文件；状态浮窗不保存截图。禁用应用备份与设备迁移数据。
 - 无 INTERNET / ACCESS_NETWORK_STATE 权限；不包含大视觉模型下载和远程控制。
@@ -48,5 +49,5 @@ curl -fL -o ncnn.zip https://github.com/Tencent/ncnn/releases/download/20260526/
 echo '26909c92eed35afed4a966b5e9e503fcb0a529691ea3f910ec2c94a4fff52804  ncnn.zip' | sha256sum -c
 unzip -q ncnn.zip
 mv ncnn-20260526-android-vulkan core/src/main/cpp/ncnn
-./gradlew :core:testDebugUnitTest :mobile:lintDebug :mobile:assembleDebug
+./gradlew :core:testDebugUnitTest :mobile:testDebugUnitTest :mobile:lintDebug :mobile:assembleDebug
 ```
