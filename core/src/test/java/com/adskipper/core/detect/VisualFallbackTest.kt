@@ -1,11 +1,15 @@
 package com.adskipper.core.detect
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -94,5 +98,65 @@ class VisualFallbackTest {
         runCurrent()
         assertNull(failed.take(key))
         assertEquals(listOf("timeout", "failed"), released)
+    }
+
+    @Test fun theSameRunnerCanRecognizeEveryNewForegroundVisit() = runTest {
+        val sessions = SplashSessionTracker()
+        val released = mutableListOf<String>()
+        var calls = 0
+        val fallback = VisualFallback<String>(this, { _, _ -> calls++; target }, released::add)
+        repeat(10) { visit ->
+            val now = visit * 10_000L
+            sessions.observeForeground("launcher", false, now)
+            val session = sessions.observeForeground("app.a", true, now + 100)!!
+            val currentKey = key.copy(sessionId = session.id)
+            val image = "frame-$visit"
+            assertTrue(fallback.submit(currentKey, image, 4_000))
+            runCurrent()
+            assertEquals(image, fallback.take(currentKey)?.image)
+            sessions.finish(session)
+            fallback.clear()
+        }
+        assertEquals(10, calls)
+        assertTrue(released.isEmpty())
+    }
+
+    @Test fun aTimedOutAttemptDoesNotDisableLaterAttempts() = runTest {
+        val released = mutableListOf<String>()
+        val fallback = VisualFallback<String>(this, { image, _ ->
+            if (image == "slow") delay(10_000)
+            target
+        }, released::add)
+        fallback.submit(key, "slow", 1_000)
+        advanceTimeBy(1_001)
+        runCurrent()
+        assertTrue(fallback.submit(key.copy(sessionId = 2), "next", 4_000))
+        runCurrent()
+        assertEquals("next", fallback.take(key.copy(sessionId = 2))?.image)
+        assertEquals(listOf("slow"), released)
+    }
+
+    @Test fun lateNativeCompletionAfterCancellationCannotOverwriteANewVisit() = runTest {
+        val released = mutableListOf<String>()
+        val nativeExit = CompletableDeferred<Unit>()
+        val nativeLock = Mutex()
+        val fallback = VisualFallback<String>(this, { image, _ ->
+            withContext(NonCancellable) {
+                nativeLock.withLock {
+                    if (image == "old native call") nativeExit.await()
+                    target
+                }
+            }
+        }, released::add)
+        fallback.submit(key, "old native call", 4_000)
+        runCurrent()
+        fallback.clear()
+        val newKey = key.copy(sessionId = 2)
+        assertTrue(fallback.submit(newKey, "new frame", 4_000))
+        runCurrent()
+        nativeExit.complete(Unit)
+        runCurrent()
+        assertEquals("new frame", fallback.take(newKey)?.image)
+        assertEquals(listOf("old native call"), released)
     }
 }

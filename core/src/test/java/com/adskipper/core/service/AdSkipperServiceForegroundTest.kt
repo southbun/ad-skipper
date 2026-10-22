@@ -64,7 +64,7 @@ class AdSkipperServiceForegroundTest {
         val second = current()
         assertNotNull("Returning from the launcher must create a fresh recognition session", second)
         assertNotEquals(first.id, second!!.id)
-        assertEquals(second.id, ReflectionHelpers.getField<Long?>(service, "pollingId"))
+        assertEquals(second.id, ReflectionHelpers.getField<Long?>(service, "pollingId")!!)
     }
 
     @Test fun temporarilyUnreadableContentDoesNotPermanentlyDisableTheCurrentSession() {
@@ -90,5 +90,12 @@ class AdSkipperServiceForegroundTest {
         send(null, home, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
         send(app, app)
         assertNull(current())
+    }
+
+    @Test fun anOverlayStateEventWithNoRootDoesNotCancelRecognition() {
+        send(app, app)
+        val first = current()!!
+        send(null, service.packageName)
+        assertEquals(first, current())
     }
 }

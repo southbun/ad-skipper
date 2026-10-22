@@ -28,6 +28,7 @@ fun ModelScreen() {
     val manager = app.modelManager
     val status by manager.status.collectAsState()
     val engine by VlmEngine.state.collectAsState()
+    val inference by VlmEngine.inferenceStatus.collectAsState()
     val scope = rememberCoroutineScope()
 
     Column(
@@ -57,6 +58,8 @@ fun ModelScreen() {
                         VlmEngine.State.ERROR -> "模型加载失败，快速识别仍可使用"
                         VlmEngine.State.NOT_LOADED -> "模型已下载，尚未加载"
                     })
+                    Text("实际识别次数：${inference.count}；${inference.message}" +
+                        if (inference.elapsedMs > 0) "（${inference.elapsedMs} ms）" else "")
                     if (engine == VlmEngine.State.NOT_LOADED || engine == VlmEngine.State.ERROR) {
                         Button(onClick = {
                             scope.launch {

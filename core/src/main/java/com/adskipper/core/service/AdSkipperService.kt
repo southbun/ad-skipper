@@ -130,8 +130,12 @@ class AdSkipperService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null || (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
                 event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)) return
-        val root = rootInActiveWindow ?: run { stopSession(); return }
-        val pkg = root.packageName?.toString() ?: run { stopSession(); return }
+        // A temporarily unreadable tree is not a foreground switch. Keep the original budget.
+        val pkg = rootInActiveWindow?.packageName?.toString()
+            ?: event.packageName?.toString()?.takeIf {
+                event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+                    (it in settings.whitelist || it in excludedPackages)
+            } ?: return
         if (pkg == packageName && event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             selfTestVisible = event.className?.toString()?.endsWith("TestAdActivity") == true
         }
@@ -155,6 +159,7 @@ class AdSkipperService : AccessibilityService() {
         pollJob = scope.launch {
             val wakeLock = getSystemService(PowerManager::class.java)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "adskipper:splash")
+            val initialVlmCount = VlmEngine.inferenceStatus.value.count
             try {
                 wakeLock.acquire(8_000L)
                 if (settings.debugOverlay) overlay.update("正在识别开屏")
@@ -168,7 +173,13 @@ class AdSkipperService : AccessibilityService() {
                     delay(750)
                 }
                 if (!attempted && isActive && settings.debugOverlay &&
-                    SystemClock.elapsedRealtime() - session.startedAt >= 8_000L) overlay.update(lastMissReason)
+                    SystemClock.elapsedRealtime() - session.startedAt >= 8_000L) {
+                    val inference = VlmEngine.inferenceStatus.value
+                    overlay.update(if (inference.count > initialVlmCount) {
+                        "大模型：${inference.message}" +
+                            if (inference.elapsedMs > 0) "（${inference.elapsedMs} ms）" else ""
+                    } else lastMissReason)
+                }
             } finally {
                 sessions.finish(session)
                 if (wakeLock.isHeld) wakeLock.release()
@@ -233,15 +244,18 @@ class AdSkipperService : AccessibilityService() {
         }
         return try {
             val key = VisualFallback.Key(session.id, windowId, revision)
-            val fast = pass(root)
-            val proposal = if (fast == null) visualFallback.take(key) else null
+            val proposal = visualFallback.take(key)
             proposal?.image?.let(frames::add)
+            // A ready model proposal goes straight to fresh-frame verification.
+            val fast = if (proposal == null) pass(root) else null
             val first = fast ?: proposal?.target ?: run {
                 if (snapshot.vlmEnabled && VlmEngine.isReady && validRoot(session, windowId) != null) {
                     val image = frames.lastOrNull() ?: ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add)
+                    if (image == null) lastMissReason = "截图失败，暂未启动大模型"
                     if (image != null && visualFallback.submit(key, image,
                             minOf(4_000L, sessions.remainingMs(session, SystemClock.elapsedRealtime())))) {
                         frames.remove(image)
+                        if (settings.debugOverlay) overlay.update("已提交大模型识别")
                     }
                 }
                 return false
