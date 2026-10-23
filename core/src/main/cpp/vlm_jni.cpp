@@ -5,6 +5,8 @@
 #include <cstring>
 #include <atomic>
 #include <chrono>
+#include <memory>
+#include <stdexcept>
 #include "ggml-backend.h"
 #include <string>
 #include <vector>
@@ -12,12 +14,23 @@
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
+#include "native_guard.h"
 
 #define LOG_TAG "VlmJni"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
+
+struct UtfChars {
+    JNIEnv * env;
+    jstring text;
+    const char * chars;
+    UtfChars(JNIEnv * env, jstring text) : env(env), text(text), chars(env->GetStringUTFChars(text, nullptr)) {
+        if (chars == nullptr) throw std::runtime_error("Model string unavailable");
+    }
+    ~UtfChars() { env->ReleaseStringUTFChars(text, chars); }
+};
 
 struct Engine {
     llama_model   * model = nullptr;
@@ -36,6 +49,17 @@ int64_t monotonic_ms() {
 bool should_abort(void *) {
     const int64_t deadline = deadline_ms.load();
     return cancelled.load() || (deadline > 0 && monotonic_ms() >= deadline);
+}
+
+void report_native_error(JNIEnv * env, const char * message) {
+    cancelled.store(true);
+    LOGE("native model error: %s", message);
+    if (env->ExceptionCheck()) return;
+    jclass error = env->FindClass("java/lang/IllegalStateException");
+    if (error != nullptr) {
+        env->ThrowNew(error, message);
+        env->DeleteLocalRef(error);
+    }
 }
 
 void release_engine() {
@@ -66,15 +90,14 @@ std::string apply_chat_template(const std::string & user_text) {
 
 } // namespace
 
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_adskipper_core_vlm_VlmEngine_nativeLoadModel(
-        JNIEnv * env, jobject /* thiz */,
+static jboolean load_model(
+        JNIEnv * env,
         jstring jmodel_path, jstring jmmproj_path, jint threads, jboolean use_gpu) {
     release_engine();
 
-    const char * model_path  = env->GetStringUTFChars(jmodel_path, nullptr);
-    const char * mmproj_path = env->GetStringUTFChars(jmmproj_path, nullptr);
-    LOGI("loadModel: %s (mmproj %s), threads=%d", model_path, mmproj_path, (int) threads);
+    UtfChars model_path(env, jmodel_path);
+    UtfChars mmproj_path(env, jmmproj_path);
+    LOGI("loadModel: %s (mmproj %s), threads=%d", model_path.chars, mmproj_path.chars, (int) threads);
 
     llama_backend_init();
     ggml_backend_load_all();
@@ -91,11 +114,9 @@ Java_com_adskipper_core_vlm_VlmEngine_nativeLoadModel(
 
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = use_gpu ? 99 : 0; // offload to Vulkan GPU when available, CPU otherwise
-    g.model = llama_model_load_from_file(model_path, mparams);
+    g.model = llama_model_load_from_file(model_path.chars, mparams);
     if (g.model == nullptr) {
         LOGE("failed to load model");
-        env->ReleaseStringUTFChars(jmodel_path, model_path);
-        env->ReleaseStringUTFChars(jmmproj_path, mmproj_path);
         release_engine();
         return JNI_FALSE;
     }
@@ -109,8 +130,6 @@ Java_com_adskipper_core_vlm_VlmEngine_nativeLoadModel(
     g.lctx = llama_init_from_model(g.model, cparams);
     if (g.lctx == nullptr) {
         LOGE("failed to create llama context");
-        env->ReleaseStringUTFChars(jmodel_path, model_path);
-        env->ReleaseStringUTFChars(jmmproj_path, mmproj_path);
         release_engine();
         return JNI_FALSE;
     }
@@ -120,9 +139,7 @@ Java_com_adskipper_core_vlm_VlmEngine_nativeLoadModel(
     mp.print_timings = false;
     mp.n_threads     = threads;
     mp.warmup        = false; // skip the load-time warmup encode pass
-    g.mctx = mtmd_init_from_file(mmproj_path, g.model, mp);
-    env->ReleaseStringUTFChars(jmodel_path, model_path);
-    env->ReleaseStringUTFChars(jmmproj_path, mmproj_path);
+    g.mctx = mtmd_init_from_file(mmproj_path.chars, g.model, mp);
     if (g.mctx == nullptr) {
         LOGE("failed to init mtmd (mmproj)");
         release_engine();
@@ -141,9 +158,8 @@ Java_com_adskipper_core_vlm_VlmEngine_nativeLoadModel(
     return JNI_TRUE;
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_adskipper_core_vlm_VlmEngine_nativeInfer(
-        JNIEnv * env, jobject /* thiz */,
+static jstring infer(
+        JNIEnv * env,
         jobject bitmap, jstring jprompt, jint max_tokens, jlong timeout_ms) {
     if (g.mctx == nullptr || g.lctx == nullptr || g.smpl == nullptr) {
         return env->NewStringUTF("");
@@ -158,14 +174,14 @@ Java_com_adskipper_core_vlm_VlmEngine_nativeInfer(
         LOGE("bitmap must be RGBA_8888");
         return env->NewStringUTF("");
     }
+    const uint32_t w = info.width, h = info.height;
+    std::vector<unsigned char> rgb((size_t) w * h * 3);
     void * pixels = nullptr;
     if (AndroidBitmap_lockPixels(env, bitmap, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS) {
         LOGE("lockPixels failed");
         return env->NewStringUTF("");
     }
     // RGBA -> RGB for mtmd_bitmap_init
-    const uint32_t w = info.width, h = info.height;
-    std::vector<unsigned char> rgb((size_t) w * h * 3);
     const auto * src = static_cast<const uint8_t *>(pixels);
     const size_t stride = info.stride;
     for (uint32_t y = 0; y < h; y++) {
@@ -178,21 +194,18 @@ Java_com_adskipper_core_vlm_VlmEngine_nativeInfer(
     }
     AndroidBitmap_unlockPixels(env, bitmap);
 
-    const char * prompt_c = env->GetStringUTFChars(jprompt, nullptr);
-    std::string user_text = std::string(mtmd_default_marker()) + "\n" + prompt_c;
-    env->ReleaseStringUTFChars(jprompt, prompt_c);
+    UtfChars prompt(env, jprompt);
+    std::string user_text = std::string(mtmd_default_marker()) + "\n" + prompt.chars;
     std::string text = apply_chat_template(user_text);
 
-    mtmd_bitmap * bmp = mtmd_bitmap_init(w, h, rgb.data());
-    mtmd_input_chunks * chunks = mtmd_input_chunks_init();
+    std::unique_ptr<mtmd_bitmap, decltype(&mtmd_bitmap_free)> bmp(mtmd_bitmap_init(w, h, rgb.data()), mtmd_bitmap_free);
+    std::unique_ptr<mtmd_input_chunks, decltype(&mtmd_input_chunks_free)> chunks(mtmd_input_chunks_init(), mtmd_input_chunks_free);
     mtmd_input_text input { text.c_str(), /* add_special = */ true, /* parse_special = */ true };
-    const mtmd_bitmap * bitmaps[1] = { bmp };
+    const mtmd_bitmap * bitmaps[1] = { bmp.get() };
 
-    int32_t rc = mtmd_tokenize(g.mctx, chunks, &input, bitmaps, 1);
+    int32_t rc = mtmd_tokenize(g.mctx, chunks.get(), &input, bitmaps, 1);
     if (rc != 0 || should_abort(nullptr)) {
         LOGE("mtmd_tokenize failed or cancelled: %d", rc);
-        mtmd_bitmap_free(bmp);
-        mtmd_input_chunks_free(chunks);
         return env->NewStringUTF("");
     }
 
@@ -201,10 +214,10 @@ Java_com_adskipper_core_vlm_VlmEngine_nativeInfer(
     llama_sampler_reset(g.smpl);
 
     llama_pos n_past = 0;
-    rc = mtmd_helper_eval_chunks(g.mctx, g.lctx, chunks, /* n_past = */ 0, /* seq_id = */ 0,
+    rc = mtmd_helper_eval_chunks(g.mctx, g.lctx, chunks.get(), /* n_past = */ 0, /* seq_id = */ 0,
                                  llama_n_batch(g.lctx), /* logits_last = */ true, &n_past);
-    mtmd_input_chunks_free(chunks);
-    mtmd_bitmap_free(bmp);
+    chunks.reset();
+    bmp.reset();
     if (rc != 0 || should_abort(nullptr)) {
         LOGE("mtmd_helper_eval_chunks failed or cancelled: %d", rc);
         return env->NewStringUTF("");
@@ -253,11 +266,28 @@ Java_com_adskipper_core_vlm_VlmEngine_nativeInfer(
     return result;
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_adskipper_core_vlm_VlmEngine_nativeRelease(JNIEnv * /* env */, jobject /* thiz */) {
-    release_engine();
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_adskipper_core_vlm_VlmEngine_nativeLoadModel(
+        JNIEnv * env, jobject, jstring model, jstring projector, jint threads, jboolean gpu) {
+    return guard_native_call<jboolean>(
+        [&] { return load_model(env, model, projector, threads, gpu); },
+        [&](const char * error) { report_native_error(env, error); });
 }
 
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_adskipper_core_vlm_VlmEngine_nativeInfer(
+        JNIEnv * env, jobject, jobject bitmap, jstring prompt, jint max_tokens, jlong timeout_ms) {
+    return guard_native_call<jstring>(
+        [&] { return infer(env, bitmap, prompt, max_tokens, timeout_ms); },
+        [&](const char * error) { report_native_error(env, error); });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_adskipper_core_vlm_VlmEngine_nativeRelease(JNIEnv * env, jobject) {
+    guard_native_call<bool>(
+        [&] { release_engine(); return true; },
+        [&](const char * error) { report_native_error(env, error); });
+}
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_adskipper_core_vlm_VlmEngine_nativeCancel(JNIEnv *, jobject) {

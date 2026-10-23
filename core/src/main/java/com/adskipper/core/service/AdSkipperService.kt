@@ -45,6 +45,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -53,6 +55,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 
 class AdSkipperService : AccessibilityService() {
+    companion object {
+        private val mutableConnected = MutableStateFlow(false)
+        val connected: StateFlow<Boolean> = mutableConnected
+    }
     // Serialize session, switch and foreground changes on the main thread.
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val sessions = SplashSessionTracker()
@@ -99,6 +105,7 @@ class AdSkipperService : AccessibilityService() {
             this, screenReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED,
         )
         startNotification()
+        mutableConnected.value = true
         scope.launch {
             SettingsRepository(this@AdSkipperService).settings.collect { new ->
                 if (new != settings) {
@@ -407,7 +414,14 @@ class AdSkipperService : AccessibilityService() {
 
     override fun onInterrupt() { stopSession() }
 
+    override fun onUnbind(intent: Intent?): Boolean {
+        mutableConnected.value = false
+        stopSession()
+        return super.onUnbind(intent)
+    }
+
     override fun onDestroy() {
+        mutableConnected.value = false
         stopSession()
         if (::overlay.isInitialized) overlay.dismiss()
         runCatching { unregisterReceiver(screenReceiver) }

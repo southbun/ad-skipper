@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.adskipper.AdSkipperApp
 import com.adskipper.core.data.AppSettings
+import com.adskipper.core.service.AdSkipperService
 import com.adskipper.ui.TestAdActivity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -47,6 +48,7 @@ fun HomeScreen() {
     val settings by app.settingsRepo.settings
         .collectAsState(initial = AppSettings())
     val scope = rememberCoroutineScope()
+    val serviceConnected by AdSkipperService.connected.collectAsState()
 
     // Poll accessibility status while this screen is visible.
     val serviceEnabled by produceState(initialValue = isAccessibilityEnabled(context)) {
@@ -67,16 +69,20 @@ fun HomeScreen() {
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    if (serviceEnabled) "无障碍服务：已开启" else "无障碍服务：未开启",
+                    when {
+                        serviceConnected -> "无障碍服务：运行中"
+                        serviceEnabled -> "无障碍服务：已授权，服务未连接"
+                        else -> "无障碍服务：未开启"
+                    },
                     style = MaterialTheme.typography.titleMedium,
-                    color = if (serviceEnabled) MaterialTheme.colorScheme.primary
+                    color = if (serviceConnected) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.error,
                 )
                 Spacer(Modifier.height(8.dp))
-                if (!serviceEnabled) {
+                if (!serviceConnected) {
                     Button(onClick = {
                         context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    }) { Text("去开启") }
+                    }) { Text(if (serviceEnabled) "关闭后重新开启服务" else "去开启") }
                 }
             }
         }

@@ -79,7 +79,8 @@ object VlmEngine {
                 message = if (SystemClock.elapsedRealtime() - started >= timeoutMs) "识别超时" else "本轮已取消"
                 throw cancelled
             } catch (error: Exception) {
-                message = "识别失败"
+                mutableState.value = State.ERROR
+                message = "模型运行失败，基础识别继续工作"
                 Timber.w(error, "Local VLM inference failed")
                 null
             } finally {
@@ -95,8 +96,13 @@ object VlmEngine {
     suspend fun release() = withContext(Dispatchers.IO) {
         cancelInference()
         mutex.withLock {
-            if (linked) nativeRelease()
-            mutableState.value = State.NOT_LOADED
+            try {
+                if (linked) nativeRelease()
+            } catch (error: Exception) {
+                Timber.w(error, "Local VLM release failed")
+            } finally {
+                mutableState.value = State.NOT_LOADED
+            }
         }
     }
 

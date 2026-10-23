@@ -61,6 +61,10 @@ jobs:
           mv ncnn-20260526-android-vulkan core/src/main/cpp/ncnn
       - name: Core regression tests
         run: ./gradlew :core:testDebugUnitTest --stacktrace
+      - name: Native exception boundary regression
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror core/src/test/cpp/native_guard_test.cpp -o "$RUNNER_TEMP/native-guard-test"
+          "$RUNNER_TEMP/native-guard-test"
       - name: Mobile tests and Android lint
         run: ./gradlew :mobile:testDebugUnitTest :mobile:lintDebug --stacktrace
       - name: Configure optional personal signing

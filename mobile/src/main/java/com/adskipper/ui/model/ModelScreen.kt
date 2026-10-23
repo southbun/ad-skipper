@@ -55,7 +55,7 @@ fun ModelScreen() {
                     Text(when (engine) {
                         VlmEngine.State.READY -> "模型已就绪"
                         VlmEngine.State.LOADING -> "正在加载模型…"
-                        VlmEngine.State.ERROR -> "模型加载失败，快速识别仍可使用"
+                        VlmEngine.State.ERROR -> "模型运行或加载失败，基础识别仍可使用"
                         VlmEngine.State.NOT_LOADED -> "模型已下载，尚未加载"
                     })
                     Text("实际识别次数：${inference.count}；${inference.message}" +

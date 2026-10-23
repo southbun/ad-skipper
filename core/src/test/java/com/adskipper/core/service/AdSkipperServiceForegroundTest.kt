@@ -1,5 +1,6 @@
 package com.adskipper.core.service
 
+import android.content.Intent
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -58,6 +59,19 @@ class AdSkipperServiceForegroundTest {
     }
 
     private fun current() = sessions.observeForeground(app, true, SystemClock.elapsedRealtime())
+
+    @Test fun connectionStateTracksTheActualServiceLifecycle() {
+        assertFalse(AdSkipperService.connected.value)
+        try {
+            service.onServiceConnected()
+            assertTrue(AdSkipperService.connected.value)
+            service.onUnbind(Intent())
+            assertFalse(AdSkipperService.connected.value)
+        } finally {
+            service.onDestroy()
+        }
+        assertFalse(AdSkipperService.connected.value)
+    }
 
     @Test fun appCanRunAgainAfterLauncherEventWithNoReadableRoot() {
         send(app, app)
