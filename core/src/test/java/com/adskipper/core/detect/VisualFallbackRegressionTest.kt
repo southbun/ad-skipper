@@ -6,8 +6,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VisualFallbackRegressionTest {
-    @Test fun visualDetectionIsEnabledByDefault() {
-        assertTrue(AppSettings().layer3Enabled)
+    @Test fun defaultsKeepTextRecognitionOnAndNativeVisualModelsOff() {
+        val settings = AppSettings()
+        assertTrue(settings.layer1Enabled)
+        assertTrue(settings.layer2Enabled)
+        assertFalse(settings.layer3Enabled)
+        assertFalse(settings.vlmEnabled)
     }
 
     @Test fun imageButtonDoesNotRequireAnOcrAdBadge() = runTest {
