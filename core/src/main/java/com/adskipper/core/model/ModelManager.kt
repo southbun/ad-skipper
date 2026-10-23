@@ -1,7 +1,6 @@
 package com.adskipper.core.model
 
 import android.content.Context
-import com.adskipper.core.data.SettingsRepository
 import com.adskipper.core.vlm.VlmEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -12,7 +11,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.RandomAccessFile
@@ -61,8 +59,6 @@ class ModelManager(context: Context) {
                     completed += file.size
                 }
                 mutableStatus.value = Status(downloaded = true, bytes = totalBytes, message = "模型文件已校验")
-                val settings = SettingsRepository(context).settings.first()
-                if (settings.masterEnabled && settings.vlmEnabled) loadModel()
             } catch (cancelled: CancellationException) {
                 mutableStatus.value = Status(downloaded = isDownloaded(), message = "已暂停，可以继续下载")
                 throw cancelled

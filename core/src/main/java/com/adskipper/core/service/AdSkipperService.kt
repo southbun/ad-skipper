@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
 import android.view.ViewConfiguration
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.content.ContextCompat
@@ -29,6 +30,10 @@ import com.adskipper.core.detect.FrameVerifier
 import com.adskipper.core.detect.VlmDetector
 import com.adskipper.core.detect.VisualFallback
 import com.adskipper.core.model.ModelManager
+import com.adskipper.core.learn.LearnedMatcher
+import com.adskipper.core.learn.LearnedRuleRepository
+import com.adskipper.core.learn.LearningController
+import com.adskipper.core.learn.LearningOverlay
 import com.adskipper.core.vlm.VlmEngine
 import com.adskipper.core.detect.NodeMatcher
 import com.adskipper.core.detect.SkipLayer
@@ -92,6 +97,9 @@ class AdSkipperService : AccessibilityService() {
     private lateinit var stats: StatsRepository
     private lateinit var overlay: DebugOverlay
     private lateinit var visualFallback: VisualFallback<Bitmap>
+    private var learningOverlay: LearningOverlay? = null
+    private val learnedRules by lazy { LearnedRuleRepository.get(this) }
+    private var learningCaptureJob: Job? = null
     private var yolo: YoloSkipDetector? = null
     private var excludedPackages = AppSettings.PROTECTED_PACKAGES
     private var selfLabels = emptySet<String>()
@@ -100,13 +108,19 @@ class AdSkipperService : AccessibilityService() {
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == Intent.ACTION_SCREEN_OFF) stopSession()
+            if (intent.action == Intent.ACTION_SCREEN_OFF) {
+                stopSession()
+                learningOverlay?.hide()
+                if (LearningController.state.value.phase == LearningController.Phase.CAPTURING)
+                    LearningController.fail("屏幕已关闭，请重新采集")
+            }
         }
     }
 
     override fun onServiceConnected() {
         stats = StatsRepository(this)
         overlay = DebugOverlay(this)
+        learningOverlay = LearningOverlay(this)
         visualFallback = VisualFallback(
             scope,
             detect = { image, timeout ->
@@ -128,13 +142,27 @@ class AdSkipperService : AccessibilityService() {
         startNotification()
         mutableConnected.value = true
         scope.launch {
-            SettingsRepository(this@AdSkipperService).settings.collect { new ->
+            LearningController.state.collect { learning ->
+                if (learning.phase != LearningController.Phase.ARMED) learningOverlay?.hide()
+                else { stopSession(); updateLearningOverlay() }
+            }
+        }
+        scope.launch {
+            learnedRules.rules.collect {
+                settingsRevision++
+                stopSession()
+            }
+        }
+        scope.launch {
+            SettingsRepository(this@AdSkipperService).settings.collect { stored ->
+                val new = stored.copy(vlmEnabled = false)
                 if (new != settings) {
                     settingsRevision++
                     stopSession()
                     overlay.dismiss()
                 }
                 settings = new
+                updateLearningOverlay()
                 modelJob?.cancel()
                 modelJob = launch(Dispatchers.IO) {
                     if (new.masterEnabled && new.vlmEnabled) {
@@ -169,12 +197,15 @@ class AdSkipperService : AccessibilityService() {
                     (it in excludedPackages || (it != packageName && it !in settings.enabledPackages))
             } ?: return
         val activityClass = event.className?.toString()
+        updateLearningOverlay()
         if (pkg == packageName && event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
             activityClass?.endsWith("Activity") == true) {
             selfTestVisible = activityClass.endsWith("TestAdActivity")
         }
         val allowed = settings.masterEnabled &&
-            (settings.layer1Enabled || settings.layer2Enabled || settings.layer3Enabled || settings.vlmEnabled) &&
+            (settings.layer1Enabled || settings.layer2Enabled || settings.layer3Enabled || settings.vlmEnabled ||
+                learnedRules.rules.value.any { it.packageName == pkg }) &&
+            !LearningController.collecting(pkg) &&
             appAllowed(pkg) &&
             getSystemService(PowerManager::class.java).isInteractive
         val session = sessions.observeForeground(pkg, allowed, SystemClock.elapsedRealtime())
@@ -256,22 +287,43 @@ class AdSkipperService : AccessibilityService() {
     }
 
     private suspend fun detectAndClick(session: SplashSessionTracker.Session): Boolean {
+        if (LearningController.collecting(session.packageName)) return false
         val root = validRoot(session) ?: return false
         val windowId = root.windowId
         val revision = settingsRevision
         val snapshot = settings
+        val rules = learnedRules.rules.value.filter { it.packageName == session.packageName }
+        val appVersion = if (rules.isNotEmpty()) runCatching {
+            packageManager.getPackageInfo(session.packageName, 0).longVersionCode
+        }.getOrDefault(-1) else -1
+        val display = getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
         val pipeline = DetectionPipeline.create(if (snapshot.layer3Enabled) yolo else null, null, selfLabels)
         val frames = ArrayList<Bitmap>()
         val started = SystemClock.elapsedRealtime()
         suspend fun pass(node: AccessibilityNodeInfo): SkipTarget? {
             val remaining = sessions.remainingMs(session, SystemClock.elapsedRealtime())
             if (remaining <= 0) return null
+            LearnedMatcher.findNode(rules, node, session.packageName, appVersion, display.width(), display.height())?.let { (rule, box) ->
+                return SkipTarget(box.exactCenterX(), box.exactCenterY(), SkipLayer.L0_LEARNED, rule.id)
+            }
+            var image: Bitmap? = null
+            suspend fun capture(): Bitmap? {
+                if (image == null) image = ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add)
+                return image
+            }
+            if (rules.any { it.version == appVersion }) {
+                capture()?.let { bitmap ->
+                    LearnedMatcher.findVisual(rules, bitmap, session.packageName, appVersion)?.let { rule ->
+                        return SkipTarget(rule.box.exactCenterX(), rule.box.exactCenterY(), SkipLayer.L0_LEARNED, rule.id)
+                    }
+                }
+            }
             val evidence = NodeMatcher.hasAdEvidence(node)
             val result = withTimeoutOrNull(remaining) {
                 withContext(Dispatchers.Default) {
                     pipeline.detect(
                         node,
-                        { ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add) },
+                        { capture() },
                         snapshot.copy(vlmEnabled = false),
                         nodeAdEvidence = evidence,
                         timeBudgetMs = remaining,
@@ -324,6 +376,9 @@ class AdSkipperService : AccessibilityService() {
                 return false
             }
             if (revision != settingsRevision) return false
+            if (LearningController.collecting(session.packageName)) return false
+            if (verified.layer == SkipLayer.L0_LEARNED &&
+                (first.detail != verified.detail || learnedRules.rules.value.none { it.id == verified.detail })) return false
 
             val node = if (verified.layer == SkipLayer.L1_NODE) {
                 NodeMatcher.findSkipNodeInfo(liveRoot, snapshot.keywords, selfLabels)?.takeIf {
@@ -426,16 +481,65 @@ class AdSkipperService : AccessibilityService() {
         }
     }
 
-    override fun onInterrupt() { stopSession() }
+    private fun updateLearningOverlay() {
+        val learning = LearningController.state.value
+        val pkg = rootInActiveWindow?.packageName?.toString()
+        if (learning.phase == LearningController.Phase.ARMED && pkg != null && pkg == learning.packageName &&
+            settings.masterEnabled && appAllowed(pkg) &&
+            getSystemService(PowerManager::class.java).isInteractive) {
+            learningOverlay?.show { captureLearning(pkg) }
+        } else learningOverlay?.hide()
+    }
+
+    private fun captureLearning(pkg: String) {
+        val id = LearningController.capturing() ?: return
+        stopSession()
+        overlay.dismiss()
+        learningCaptureJob = scope.launch {
+            var image: Bitmap? = null
+            try {
+                delay(150) // Let the capture button disappear before taking the screenshot.
+                val root = rootInActiveWindow ?: error("无法读取前台应用")
+                check(settings.masterEnabled && appAllowed(pkg) && root.packageName?.toString() == pkg &&
+                    getSystemService(PowerManager::class.java).isInteractive) { "前台已变化，请重新采集" }
+                val window = root.windowId
+                val nodes = LearnedMatcher.nodes(root)
+                val version = packageManager.getPackageInfo(pkg, 0).longVersionCode
+                image = ScreenshotCapturer.capture(this@AdSkipperService) ?: error("截图失败，请重新采集")
+                val after = rootInActiveWindow
+                check(settings.masterEnabled && appAllowed(pkg) && after != null &&
+                    SkipSafety.sameWindow(pkg, window, after.packageName?.toString(), after.windowId) &&
+                    getSystemService(PowerManager::class.java).isInteractive) { "采集时页面已切换，请重试" }
+                val afterNodes = LearnedMatcher.nodes(after)
+                val stableNodes = if (LearnedMatcher.layout(nodes) == LearnedMatcher.layout(afterNodes)) afterNodes else emptyList()
+                LearningController.captured(this@AdSkipperService, id, image!!, stableNodes, version)
+            } catch (cancelled: CancellationException) {
+                if (LearningController.state.value.id == id) LearningController.fail("采集已取消，请重试")
+                throw cancelled
+            } catch (error: Exception) {
+                if (LearningController.state.value.id == id) LearningController.fail(error.message ?: "采集失败")
+            } finally { image?.recycle() }
+        }
+    }
+
+    override fun onInterrupt() {
+        stopSession()
+        learningOverlay?.hide()
+        learningCaptureJob?.cancel()
+    }
 
     override fun onUnbind(intent: Intent?): Boolean {
         mutableConnected.value = false
+        learningOverlay?.hide()
+        learningCaptureJob?.cancel()
         stopSession()
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
         mutableConnected.value = false
+        learningOverlay?.hide()
+        learningCaptureJob?.cancel()
         stopSession()
         if (::overlay.isInitialized) overlay.dismiss()
         runCatching { unregisterReceiver(screenReceiver) }

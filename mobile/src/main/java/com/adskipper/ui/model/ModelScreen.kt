@@ -14,29 +14,25 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.adskipper.AdSkipperApp
-import com.adskipper.core.vlm.VlmEngine
-import kotlinx.coroutines.launch
+import com.adskipper.core.learn.LearningController
 
 @Composable
 fun ModelScreen() {
     val app = AdSkipperApp.get(LocalContext.current)
     val manager = app.modelManager
     val status by manager.status.collectAsState()
-    val engine by VlmEngine.state.collectAsState()
-    val inference by VlmEngine.inferenceStatus.collectAsState()
-    val scope = rememberCoroutineScope()
+    val learning by LearningController.state.collectAsState()
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("本地 AI", style = MaterialTheme.typography.headlineMedium)
-        Text("快速识别未找到按钮时，由大模型分析画面。截图只在手机内处理，无需账号或 Token。")
+        Text("在“应用 → 学习 / 规则”中采集广告，由本地模型提议跳过按钮，再确认保存。无需账号或 Token。")
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("InternVL3-2B", style = MaterialTheme.typography.titleLarge)
@@ -52,25 +48,12 @@ fun ModelScreen() {
                     status.message.takeIf { it.isNotEmpty() }?.let { Text(it) }
                     Button(onClick = manager::startDownload) { Text("下载本地模型") }
                 } else {
-                    Text(when (engine) {
-                        VlmEngine.State.READY -> "模型已就绪"
-                        VlmEngine.State.LOADING -> "正在加载模型…"
-                        VlmEngine.State.ERROR -> "模型运行或加载失败，基础识别仍可使用"
-                        VlmEngine.State.NOT_LOADED -> "模型已下载，尚未加载"
-                    })
-                    Text("实际识别次数：${inference.count}；${inference.message}" +
-                        if (inference.elapsedMs > 0) "（${inference.elapsedMs} ms）" else "")
-                    if (engine == VlmEngine.State.NOT_LOADED || engine == VlmEngine.State.ERROR) {
-                        Button(onClick = {
-                            scope.launch {
-                                app.settingsRepo.setVlmEnabled(true)
-                                manager.loadModel()
-                            }
-                        }) { Text("加载并启用") }
-                    }
+                    Text("模型文件已就绪，学习时按需加载")
+                    Text("本次学习实际识别次数：${learning.inferenceCount}；${learning.message.ifBlank { "尚未开始学习" }}" +
+                        if (learning.elapsedMs > 0) "（${learning.elapsedMs} ms）" else "")
                 }
             }
         }
-        Text("首次加载和识别耗时请在手机上测试。只在应用切换到前台后的短时间内识别。", style = MaterialTheme.typography.bodySmall)
+        Text("学习采用独立进程和 CPU，首次分析可能需要几十秒。日常跳过优先匹配已确认规则，旧大模型自动兜底保持暂停。", style = MaterialTheme.typography.bodySmall)
     }
 }

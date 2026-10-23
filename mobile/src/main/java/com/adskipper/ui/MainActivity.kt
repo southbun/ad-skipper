@@ -28,6 +28,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.adskipper.ui.home.HomeScreen
 import com.adskipper.ui.apps.AppsScreen
+import com.adskipper.ui.apps.LearningScreen
 import com.adskipper.ui.model.ModelScreen
 import com.adskipper.ui.settings.SettingsScreen
 import com.adskipper.ui.stats.StatsScreen
@@ -94,7 +95,11 @@ private fun AppNavHost() {
             composable(Routes.HOME) {
                 HomeScreen(onSelectApps = { nav.navigate(Routes.APPS) { launchSingleTop = true } })
             }
-            composable(Routes.APPS) { AppsScreen() }
+            composable(Routes.APPS) { AppsScreen(onLearn = { nav.navigate("learn/${android.net.Uri.encode(it)}") }) }
+            composable("learn/{packageName}") { entry ->
+                LearningScreen(entry.arguments!!.getString("packageName")!!,
+                    onBack = { nav.popBackStack() }, onModels = { nav.navigate(Routes.MODEL) })
+            }
             composable(Routes.MODEL) { ModelScreen() }
             composable(Routes.SETTINGS) { SettingsScreen() }
             composable(Routes.STATS) { StatsScreen() }

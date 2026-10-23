@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.adskipper.AdSkipperApp
 import com.adskipper.core.data.AppSettings
 import com.adskipper.core.service.AdSkipperService
+import com.adskipper.core.learn.LearnedRuleRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -54,11 +56,12 @@ internal fun filterInstalledApps(
 }
 
 @Composable
-fun AppsScreen() {
+fun AppsScreen(onLearn: (String) -> Unit = {}) {
     val context = LocalContext.current
     val app = AdSkipperApp.get(context)
     val settings by app.settingsRepo.settings.collectAsState(initial = AppSettings())
     val scope = rememberCoroutineScope()
+    val rules by LearnedRuleRepository.get(context).rules.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
     var enabledOnly by rememberSaveable { mutableStateOf(false) }
     val loaded by produceState<Result<List<InstalledApp>>?>(initialValue = null) {
@@ -127,6 +130,9 @@ fun AppsScreen() {
                                 if (item.isProtected) Text("系统或浏览器，保持保护", style = MaterialTheme.typography.bodySmall)
                             }
                             Switch(checked = checked, onCheckedChange = null, enabled = !item.isProtected)
+                        }
+                        if (checked) TextButton(onClick = { onLearn(item.packageName) }) {
+                            Text("学习 / 规则（${rules.count { it.packageName == item.packageName }}）")
                         }
                         HorizontalDivider()
                     }

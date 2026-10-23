@@ -58,9 +58,7 @@ fun SettingsScreen() {
                 SettingSwitch("视觉按钮识别（YOLO）", settings.layer3Enabled) {
                     scope.launch { app.settingsRepo.setLayer3Enabled(it) }
                 }
-                SettingSwitch("本地大模型兜底", settings.vlmEnabled) {
-                    scope.launch { app.settingsRepo.setVlmEnabled(it) }
-                }
+                Text("大模型自动兜底已暂停，请在应用列表使用“学习 / 规则”。")
                 Text("视觉模型仍有兼容性问题，暂时保持关闭。已下载的模型文件会保留在手机。", style = MaterialTheme.typography.bodySmall)
             }
         }

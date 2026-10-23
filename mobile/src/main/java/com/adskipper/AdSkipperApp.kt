@@ -18,6 +18,9 @@ class AdSkipperApp : Application() {
     override fun onCreate() {
         super.onCreate()
         if (BuildConfig.DEBUG) Timber.plant(Timber.DebugTree())
+        if (Application.getProcessName().endsWith(":learning")) return
+        // Pending full screenshots are temporary and never survive a process restart.
+        java.io.File(cacheDir, "learning").listFiles()?.filter { it.name.endsWith(".png") }?.forEach { it.delete() }
         settingsRepo = SettingsRepository(this)
         statsRepo = StatsRepository(this)
         modelManager = ModelManager(this)

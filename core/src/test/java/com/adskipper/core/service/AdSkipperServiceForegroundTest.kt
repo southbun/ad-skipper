@@ -9,6 +9,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.adskipper.core.data.AppSettings
 import com.adskipper.core.detect.SplashSessionTracker
+import com.adskipper.core.learn.LearningController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -47,6 +48,7 @@ class AdSkipperServiceForegroundTest {
     }
 
     @After fun cleanup() {
+        LearningController.discard()
         ReflectionHelpers.getField<CoroutineScope>(service, "scope").cancel()
         dispatcher.scheduler.runCurrent()
         Dispatchers.resetMain()
@@ -114,6 +116,21 @@ class AdSkipperServiceForegroundTest {
     @Test fun onlySelectedAppsCanStartRecognition() {
         send("unselected.app", "unselected.app")
         assertNull(ReflectionHelpers.getField<Long?>(service, "pollingId"))
+        send(app, app)
+        assertNotNull(ReflectionHelpers.getField<Long?>(service, "pollingId"))
+    }
+
+    @Test fun collectingASamplePausesAutomaticClicksInThatApp() {
+        LearningController.arm(app)
+        send(app, app)
+        assertNull(ReflectionHelpers.getField<Long?>(service, "pollingId"))
+        LearningController.discard()
+        send(app, app)
+        assertNotNull(ReflectionHelpers.getField<Long?>(service, "pollingId"))
+    }
+
+    @Test fun learningDoesNotPauseUnrelatedSelectedApps() {
+        LearningController.arm("another.app")
         send(app, app)
         assertNotNull(ReflectionHelpers.getField<Long?>(service, "pollingId"))
     }

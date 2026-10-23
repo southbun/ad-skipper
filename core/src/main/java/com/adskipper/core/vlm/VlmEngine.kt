@@ -26,7 +26,7 @@ object VlmEngine {
     private val mutex = Mutex()
     @Volatile private var linked = false
 
-    suspend fun load(modelPath: String, mmprojPath: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun load(modelPath: String, mmprojPath: String, useGpu: Boolean = true): Boolean = withContext(Dispatchers.IO) {
         mutex.withLock {
             if (isReady) return@withLock true
             mutableState.value = State.LOADING
@@ -36,7 +36,7 @@ object VlmEngine {
                     linked = true
                 }
                 val threads = minOf(4, Runtime.getRuntime().availableProcessors())
-                nativeLoadModel(modelPath, mmprojPath, threads, true) ||
+                (useGpu && nativeLoadModel(modelPath, mmprojPath, threads, true)) ||
                     nativeLoadModel(modelPath, mmprojPath, threads, false)
             } catch (cancelled: CancellationException) {
                 mutableState.value = State.NOT_LOADED
