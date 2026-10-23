@@ -1,22 +1,16 @@
 package com.adskipper.ui.settings
 
-import android.content.Intent
-import android.content.pm.PackageManager
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -25,7 +19,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -35,9 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.adskipper.AdSkipperApp
 import com.adskipper.core.data.AppSettings
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen() {
@@ -126,15 +117,6 @@ fun SettingsScreen() {
             }
         }
 
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("白名单（不跳过的应用）", style = MaterialTheme.typography.titleMedium)
-                WhitelistPicker(
-                    whitelist = settings.whitelist,
-                    onChange = { scope.launch { app.settingsRepo.setWhitelist(it) } },
-                )
-            }
-        }
     }
 }
 
@@ -147,43 +129,5 @@ private fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -
     ) {
         Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         Switch(checked = checked, onCheckedChange = onChange)
-    }
-}
-
-@Composable
-private fun WhitelistPicker(whitelist: Set<String>, onChange: (Set<String>) -> Unit) {
-    val context = LocalContext.current
-    // queryIntentActivities + loadLabel per app take ~1s; keep them off the
-    // main thread so switching to this tab doesn't jank.
-    val apps by produceState(initialValue = emptyList<Pair<String, String>>()) {
-        value = withContext(Dispatchers.IO) {
-            val pm = context.packageManager
-            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-            pm.queryIntentActivities(intent, 0)
-                .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
-                .distinctBy { it.first }
-                .sortedBy { it.second }
-                .filter { it.first != context.packageName }
-        }
-    }
-    if (apps.isEmpty()) {
-        Text("加载应用列表…", style = MaterialTheme.typography.bodySmall)
-        return
-    }
-    Column {
-        apps.forEach { (pkg, label) ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Checkbox(
-                    checked = pkg in whitelist,
-                    onCheckedChange = { checked ->
-                        onChange(if (checked) whitelist + pkg else whitelist - pkg)
-                    },
-                )
-                Text("$label  ($pkg)", style = MaterialTheme.typography.bodySmall)
-            }
-        }
     }
 }

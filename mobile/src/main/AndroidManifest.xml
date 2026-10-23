@@ -16,22 +16,20 @@
          getting CPU mid-window. Held only for the splash window. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- List installed apps for the whitelist picker. -->
+    <!-- List launchable apps for explicit per-app selection. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
-        <!-- home apps, for the service's always-on launcher whitelist -->
+        <!-- Home and browser apps remain protected in the selector and service. -->
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.HOME" />
         </intent>
-        <!-- browser apps, for the service's always-on browser exclusion -->
         <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <category android:name="android.intent.category.BROWSABLE" />
-            <data android:scheme="http" />
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.APP_BROWSER" />
         </intent>
     </queries>
 

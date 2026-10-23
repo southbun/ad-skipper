@@ -12,6 +12,8 @@ import com.adskipper.core.detect.SplashSessionTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -39,7 +41,7 @@ class AdSkipperServiceForegroundTest {
     @Before fun setup() {
         Dispatchers.setMain(dispatcher)
         service = Robolectric.buildService(AdSkipperService::class.java).create().get()
-        ReflectionHelpers.setField(service, "settings", AppSettings())
+        ReflectionHelpers.setField(service, "settings", AppSettings(enabledPackages = setOf(app)))
         ReflectionHelpers.setField(service, "overlay", DebugOverlay(service))
         sessions = ReflectionHelpers.getField(service, "sessions")
     }
@@ -82,7 +84,7 @@ class AdSkipperServiceForegroundTest {
 
     @Test fun embeddedWebActivitiesDoNotExcludeTheirWholeApp() {
         installBrowserFixtures()
-        val excluded = ReflectionHelpers.callInstanceMethod<Set<String>>(service, "resolveExcludedPackages")
+        val excluded = AdSkipperService.protectedPackages(service)
         assertFalse("Taobao's embedded browser must not disable splash detection", "com.taobao.taobao" in excluded)
         assertFalse("Weibo's embedded browser must not disable splash detection", "com.sina.weibo" in excluded)
         assertTrue("Unlisted browser applications must still be excluded", "org.example.browser" in excluded)
@@ -92,11 +94,72 @@ class AdSkipperServiceForegroundTest {
 
     @Test fun aWeiboForegroundEventStartsDetectionWithTheResolvedExclusions() {
         installBrowserFixtures()
-        ReflectionHelpers.setField(service, "excludedPackages",
-            ReflectionHelpers.callInstanceMethod<Set<String>>(service, "resolveExcludedPackages"))
+        ReflectionHelpers.setField(service, "excludedPackages", AdSkipperService.protectedPackages(service))
+        ReflectionHelpers.setField(service, "settings", AppSettings(enabledPackages = setOf("com.sina.weibo")))
         send("com.sina.weibo", "com.sina.weibo")
         assertNotNull("A normal app with a web activity must enter the detection loop",
             ReflectionHelpers.getField<Long?>(service, "pollingId"))
+    }
+
+    @Test fun defaultsNeverStartRecognitionForAnyExternalApp() {
+        ReflectionHelpers.setField(service, "settings", AppSettings())
+        for (pkg in listOf(app, "com.sina.weibo", "com.taobao.taobao")) {
+            send(pkg, pkg)
+            send(pkg, pkg, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+            assertNull(ReflectionHelpers.getField<Long?>(service, "pollingId"))
+            assertNull(ReflectionHelpers.getField<Job?>(service, "pollJob"))
+        }
+    }
+
+    @Test fun onlySelectedAppsCanStartRecognition() {
+        send("unselected.app", "unselected.app")
+        assertNull(ReflectionHelpers.getField<Long?>(service, "pollingId"))
+        send(app, app)
+        assertNotNull(ReflectionHelpers.getField<Long?>(service, "pollingId"))
+    }
+
+    @Test fun leavingForAnUnreadableUnselectedAppEndsTheSession() {
+        send(app, app)
+        val first = current()!!
+        val job = ReflectionHelpers.getField<Job>(service, "pollJob")
+        send(null, "unselected.app")
+        assertFalse(sessions.isCurrent(first, SystemClock.elapsedRealtime()))
+        assertTrue(job.isCancelled)
+    }
+
+    @Test fun disablingTheCurrentAppStopsFurtherRecognition() {
+        send(app, app)
+        val job = ReflectionHelpers.getField<Job>(service, "pollJob")
+        ReflectionHelpers.setField(service, "settings", AppSettings())
+        send(app, app)
+        assertTrue(job.isCancelled)
+        assertNull(ReflectionHelpers.getField<Any?>(sessions, "active"))
+    }
+
+    @Test fun protectedAppsCannotBeEnabledByAStoredSelection() {
+        ReflectionHelpers.setField(service, "excludedPackages", AdSkipperService.protectedPackages(service))
+        ReflectionHelpers.setField(service, "settings", AppSettings(enabledPackages = setOf("com.android.chrome", home)))
+        send("com.android.chrome", "com.android.chrome")
+        assertNull(ReflectionHelpers.getField<Long?>(service, "pollingId"))
+        send(home, home)
+        assertNull(ReflectionHelpers.getField<Long?>(service, "pollingId"))
+    }
+
+    @Test fun selectedContentUpdatesWakeTheSameSession() {
+        send(app, app)
+        val first = current()!!
+        val updates = ReflectionHelpers.getField<Channel<Unit>>(service, "pollUpdates")
+        assertTrue(updates.tryReceive().isFailure)
+        send(app, app, AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        assertTrue(updates.tryReceive().isSuccess)
+        assertEquals(first.id, ReflectionHelpers.getField<Long?>(service, "pollingId")!!)
+    }
+
+    @Test fun unrelatedContentUpdatesDoNotWakeRecognition() {
+        send(app, app)
+        val updates = ReflectionHelpers.getField<Channel<Unit>>(service, "pollUpdates")
+        send(app, "unselected.app", AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        assertTrue(updates.tryReceive().isFailure)
     }
 
     @Test fun connectionStateTracksTheActualServiceLifecycle() {

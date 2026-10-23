@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -42,7 +44,7 @@ private fun isAccessibilityEnabled(context: Context): Boolean {
 }
 
 @Composable
-fun HomeScreen() {
+fun HomeScreen(onSelectApps: () -> Unit) {
     val context = LocalContext.current
     val app = AdSkipperApp.get(context)
     val settings by app.settingsRepo.settings
@@ -61,6 +63,7 @@ fun HomeScreen() {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -95,13 +98,18 @@ fun HomeScreen() {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("自动跳过广告", style = MaterialTheme.typography.titleMedium)
+                Text("跳过功能总开关", style = MaterialTheme.typography.titleMedium)
                 Switch(
                     checked = settings.masterEnabled,
                     onCheckedChange = { v -> scope.launch { app.settingsRepo.setMasterEnabled(v) } },
                 )
             }
         }
+
+        Button(onClick = onSelectApps, modifier = Modifier.fillMaxWidth()) {
+            Text("选择应用（已开启 ${settings.enabledPackages.size} 个）")
+        }
+        Text("只有在「应用」页开启的应用才会识别开屏广告。", style = MaterialTheme.typography.bodySmall)
 
         OutlinedButton(
             onClick = { context.startActivity(Intent(context, TestAdActivity::class.java)) },

@@ -42,6 +42,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -58,6 +59,25 @@ class AdSkipperService : AccessibilityService() {
     companion object {
         private val mutableConnected = MutableStateFlow(false)
         val connected: StateFlow<Boolean> = mutableConnected
+
+        @Suppress("DEPRECATION")
+        fun protectedPackages(context: Context): Set<String> {
+            val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+            // Web-link handlers also include embedded browsers in normal apps.
+            val browser = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_BROWSER)
+            val dynamic = listOf(home, browser).flatMap { intent ->
+                context.packageManager.queryIntentActivities(intent, PackageManager.MATCH_ALL)
+                    .map { it.activityInfo.packageName }
+            }
+            return AppSettings.PROTECTED_PACKAGES + dynamic + setOf(
+                "com.android.quicksearchbox", "com.google.android.googlequicksearchbox", "com.miui.personalassistant",
+                "com.android.chrome", "com.chrome.beta", "com.chrome.dev", "org.mozilla.firefox",
+                "com.microsoft.emmx", "com.opera.browser", "com.brave.browser", "com.android.browser",
+                "com.mi.globalbrowser", "com.heytap.browser", "com.coloros.browser", "com.vivo.browser",
+                "com.huawei.browser", "com.sec.android.app.sbrowser", "com.tencent.mtt", "com.baidu.browser.apps",
+                "com.UCMobile", "com.ucmobile.lite", "com.quark.browser",
+            )
+        }
     }
     // Serialize session, switch and foreground changes on the main thread.
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -65,6 +85,7 @@ class AdSkipperService : AccessibilityService() {
     private var settings = AppSettings(masterEnabled = false)
     private var settingsRevision = 0L
     private var pollJob: Job? = null
+    private var pollUpdates: Channel<Unit>? = null
     private var feedbackJob: Job? = null
     private var modelJob: Job? = null
     private var pollingId: Long? = null
@@ -72,7 +93,7 @@ class AdSkipperService : AccessibilityService() {
     private lateinit var overlay: DebugOverlay
     private lateinit var visualFallback: VisualFallback<Bitmap>
     private var yolo: YoloSkipDetector? = null
-    private var excludedPackages = emptySet<String>()
+    private var excludedPackages = AppSettings.PROTECTED_PACKAGES
     private var selfLabels = emptySet<String>()
     private var selfTestVisible = false
     private var lastMissReason = "未找到符合条件的跳过按钮"
@@ -99,7 +120,7 @@ class AdSkipperService : AccessibilityService() {
             },
             release = { it.recycle() },
         )
-        excludedPackages = resolveExcludedPackages()
+        excludedPackages = protectedPackages(this)
         selfLabels = setOf(applicationInfo.loadLabel(packageManager).toString())
         ContextCompat.registerReceiver(
             this, screenReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED,
@@ -137,11 +158,15 @@ class AdSkipperService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null || (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
                 event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)) return
+        val eventPackage = event.packageName?.toString()
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED && eventPackage != null &&
+            eventPackage !in settings.enabledPackages &&
+            !(eventPackage == packageName && settings.selfTest && selfTestVisible)) return
         // A temporarily unreadable tree is not a foreground switch. Keep the original budget.
         val pkg = rootInActiveWindow?.packageName?.toString()
             ?: event.packageName?.toString()?.takeIf {
                 event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-                    (it in settings.whitelist || it in excludedPackages)
+                    (it in excludedPackages || (it != packageName && it !in settings.enabledPackages))
             } ?: return
         val activityClass = event.className?.toString()
         if (pkg == packageName && event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
@@ -150,20 +175,23 @@ class AdSkipperService : AccessibilityService() {
         }
         val allowed = settings.masterEnabled &&
             (settings.layer1Enabled || settings.layer2Enabled || settings.layer3Enabled || settings.vlmEnabled) &&
-            pkg !in settings.whitelist && pkg !in excludedPackages &&
-            (pkg != packageName || (settings.selfTest && selfTestVisible)) &&
+            appAllowed(pkg) &&
             getSystemService(PowerManager::class.java).isInteractive
         val session = sessions.observeForeground(pkg, allowed, SystemClock.elapsedRealtime())
         if (session == null) {
             if (!allowed) pollJob?.cancel()
             return
         }
-        if (pollingId == session.id) return
+        if (pollingId == session.id) {
+            pollUpdates?.trySend(Unit)
+            return
+        }
         clearVisualFallback()
         pollJob?.cancel()
         feedbackJob?.cancel()
         overlay.dismiss()
         pollingId = session.id
+        val updates = Channel<Unit>(Channel.CONFLATED).also { pollUpdates = it }
         lastMissReason = "未找到符合条件的跳过按钮"
         pollJob = scope.launch {
             val wakeLock = getSystemService(PowerManager::class.java)
@@ -172,15 +200,11 @@ class AdSkipperService : AccessibilityService() {
             try {
                 wakeLock.acquire(8_000L)
                 if (settings.debugOverlay) overlay.update("正在识别开屏")
-                delay(500)
-                var attempted = false
-                while (isActive && sessions.isCurrent(session, SystemClock.elapsedRealtime())) {
-                    if (detectAndClick(session)) {
-                        attempted = true
-                        break
-                    }
-                    delay(750)
-                }
+                val attempted = pollForSkipButton(
+                    updates,
+                    isCurrent = { sessions.isCurrent(session, SystemClock.elapsedRealtime()) },
+                    detect = { detectAndClick(session) },
+                )
                 if (!attempted && isActive && settings.debugOverlay &&
                     SystemClock.elapsedRealtime() - session.startedAt >= 8_000L) {
                     val inference = VlmEngine.inferenceStatus.value
@@ -191,8 +215,12 @@ class AdSkipperService : AccessibilityService() {
                 }
             } finally {
                 sessions.finish(session)
+                updates.close()
                 if (wakeLock.isHeld) wakeLock.release()
-                if (pollingId == session.id) pollingId = null
+                if (pollingId == session.id) {
+                    pollingId = null
+                    pollUpdates = null
+                }
                 if (pollingId == null) clearVisualFallback()
             }
         }
@@ -203,6 +231,7 @@ class AdSkipperService : AccessibilityService() {
         sessions.invalidate()
         pollJob?.cancel()
         pollJob = null
+        pollUpdates = null
         pollingId = null
         feedbackJob?.cancel()
         feedbackJob = null
@@ -213,9 +242,12 @@ class AdSkipperService : AccessibilityService() {
         if (::visualFallback.isInitialized) visualFallback.clear()
     }
 
+    private fun appAllowed(pkg: String): Boolean = pkg !in excludedPackages &&
+        if (pkg == packageName) settings.selfTest && selfTestVisible else pkg in settings.enabledPackages
+
     private fun validRoot(session: SplashSessionTracker.Session, windowId: Int? = null): AccessibilityNodeInfo? {
         if (!settings.masterEnabled || !sessions.isCurrent(session, SystemClock.elapsedRealtime())) return null
-        if (session.packageName in settings.whitelist || session.packageName in excludedPackages) return null
+        if (!appAllowed(session.packageName)) return null
         if (!getSystemService(PowerManager::class.java).isInteractive) return null
         return rootInActiveWindow?.takeIf {
             if (windowId == null) it.packageName?.toString() == session.packageName
@@ -381,24 +413,6 @@ class AdSkipperService : AccessibilityService() {
             if (!dispatchGesture(gesture, callback, null) && continuation.isActive) continuation.resume(false)
         }
     } ?: false
-
-    @Suppress("DEPRECATION")
-    private fun resolveExcludedPackages(): Set<String> {
-        val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-        // Web-link handlers also include embedded browsers in normal apps.
-        val browser = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_BROWSER)
-        val dynamic = listOf(home, browser).flatMap { intent ->
-            packageManager.queryIntentActivities(intent, PackageManager.MATCH_ALL).map { it.activityInfo.packageName }
-        }
-        return dynamic.toSet() + setOf(
-            "com.android.quicksearchbox", "com.google.android.googlequicksearchbox", "com.miui.personalassistant",
-            "com.android.chrome", "com.chrome.beta", "com.chrome.dev", "org.mozilla.firefox",
-            "com.microsoft.emmx", "com.opera.browser", "com.brave.browser", "com.android.browser",
-            "com.mi.globalbrowser", "com.heytap.browser", "com.coloros.browser", "com.vivo.browser",
-            "com.huawei.browser", "com.sec.android.app.sbrowser", "com.tencent.mtt", "com.baidu.browser.apps",
-            "com.UCMobile", "com.ucmobile.lite", "com.quark.browser",
-        )
-    }
 
     private fun startNotification() {
         val manager = getSystemService(NotificationManager::class.java)
