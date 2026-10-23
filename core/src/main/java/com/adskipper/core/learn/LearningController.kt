@@ -85,7 +85,7 @@ object LearningController {
         val app = context.applicationContext
         val started = SystemClock.elapsedRealtime()
         mutableState.value = current.copy(phase = Phase.ANALYZING, box = null,
-            message = "正在启动学习进程，首次分析可能需要几十秒", inferenceCount = 0, elapsedMs = 0)
+            message = "正在启动本地识别", inferenceCount = 0, elapsedMs = 0)
         val reply = Messenger(Handler(Looper.getMainLooper()) { message ->
             receive(current.id, message, SystemClock.elapsedRealtime() - started)
             true

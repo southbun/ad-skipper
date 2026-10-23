@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
+import com.adskipper.core.detect.OcrLine
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -66,6 +67,31 @@ class LearnedRuleTest {
         assertTrue(LearnedMatcher.validButton(Rect(989, 2421, 1148, 2514), 1200, 2608))
         val rule = LearnedMatcher.create(pkg, 7, image(), Rect(262, 594, 308, 620), emptyList())
         assertTrue(rule.valid())
+    }
+
+    @Test fun theCapturedBottomSkipTextProducesAReviewBox() {
+        val lines = listOf(OcrLine("跳转至淘宝享双11优惠", 600, 2290, 471, 45),
+            OcrLine("跳过", 1068, 2467, 113, 47))
+        val candidate = LearnedMatcher.findTextButton(lines, 1200, 2608)
+        assertNotNull(candidate)
+        assertTrue(candidate!!.contains(1068, 2467))
+        assertTrue(LearnedMatcher.validButton(candidate, 1200, 2608))
+    }
+
+    @Test fun ambiguousSkipTextNeverChoosesTheFirstButton() {
+        assertNull(LearnedMatcher.findTextButton(listOf(OcrLine("跳过", 1068, 2467, 113, 47),
+            OcrLine("Skip", 1068, 200, 113, 47)), 1200, 2608))
+    }
+
+    @Test fun normalBusinessTextAndSystemStripTextAreNotLearningCandidates() {
+        for (line in listOf(OcrLine("跳过登录", 1068, 200, 113, 47),
+                OcrLine("点击跳过，立即购买", 1068, 200, 113, 47),
+                OcrLine("跳过", 1068, 2570, 113, 47)))
+            assertNull(LearnedMatcher.findTextButton(listOf(line), 1200, 2608))
+    }
+
+    @Test fun aCountdownLabelIsAcceptedWithoutLoadingTheLargeModel() {
+        assertNotNull(LearnedMatcher.findTextButton(listOf(OcrLine("跳过 2", 1068, 200, 113, 47)), 1200, 2608))
     }
 
     @Test fun flatPagesAndFlatButtonRegionsCannotBecomeVisualMatches() {

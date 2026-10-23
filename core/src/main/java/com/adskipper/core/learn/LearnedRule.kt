@@ -4,7 +4,9 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
+import com.adskipper.core.detect.KeywordMatcher
 import com.adskipper.core.detect.NodeMatcher
+import com.adskipper.core.detect.OcrLine
 import com.adskipper.core.detect.SkipSafety
 import java.security.MessageDigest
 import java.util.UUID
@@ -34,7 +36,19 @@ data class LearnedRule(
 object LearnedMatcher {
     fun validButton(box: Rect, width: Int, height: Int): Boolean =
         SkipSafety.isButtonBox(box.left, box.top, box.right, box.bottom, width, height) &&
-            box.exactCenterY() in height * 0.04f..height * 0.94f
+            // Bottom splash buttons can sit below 94%; keep the navigation strip excluded.
+            box.exactCenterY() in height * 0.04f..height * 0.97f
+
+    fun findTextButton(lines: List<OcrLine>, width: Int, height: Int): Rect? = lines.asSequence()
+        .filter { SkipSafety.isOcrCandidate(it, width, height) &&
+            KeywordMatcher.matches(it.text, listOf("跳过", "跳过广告", "关闭广告", "Skip", "Skip Ad", "skip_ad")) != null }
+        .map { line ->
+            val left = line.centerX - line.width / 2
+            val top = line.centerY - line.height / 2
+            val padding = maxOf(2, line.height / 2)
+            Rect(maxOf(0, left - padding), maxOf(0, top - padding),
+                minOf(width, left + line.width + padding), minOf(height, top + line.height + padding))
+        }.filter { validButton(it, width, height) }.singleOrNull()
 
     fun nodes(root: AccessibilityNodeInfo?): List<LearnedNode> {
         root ?: return emptyList()

@@ -11,6 +11,7 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.Process
+import com.adskipper.core.detect.OcrDetector
 import com.adskipper.core.detect.VlmDetector
 import com.adskipper.core.model.ModelManager
 import com.adskipper.core.vlm.VlmEngine
@@ -18,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /** A native driver failure must not take down the accessibility service. */
@@ -48,16 +50,24 @@ class LearningWorkerService : Service() {
                         val size = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                         BitmapFactory.decodeFile(path, size)
                         check(size.outWidth.toLong() * size.outHeight in 1..16_000_000) { "图片尺寸超出限制" }
-                        val paths = ModelManager(this@LearningWorkerService).modelPaths()
-                            ?: error("请先在本地 AI 页面下载模型")
-                        send(PROGRESS, "正在加载学习模型（CPU）")
-                        check(VlmEngine.load(paths.first, paths.second, useGpu = false)) { "学习模型加载失败" }
                         val image = BitmapFactory.decodeFile(path) ?: error("无法读取采集图片")
                         try {
+                            send(PROGRESS, "正在本机识别跳过文字")
+                            val textBox = withTimeoutOrNull(5_000L) {
+                                LearnedMatcher.findTextButton(OcrDetector().recognize(image), image.width, image.height)
+                            }
+                            if (textBox != null) {
+                                send(RESULT, "本地文字识别已定位，请确认框内是跳过按钮", textBox)
+                                return@launch
+                            }
+                            val paths = ModelManager(this@LearningWorkerService).modelPaths()
+                                ?: error("未找到唯一的跳过文字，可手动框选，或下载可选视觉模型后重试")
+                            send(PROGRESS, "文字识别未定位，正在加载视觉模型（CPU）")
+                            check(VlmEngine.load(paths.first, paths.second, useGpu = false)) { "学习模型加载失败" }
                             send(INFER, "AI 正在分析按钮")
-                            val box = VlmDetector().findSkipButton(image, 60_000L)
-                            if (box == null) send(FAILURE, "AI 未找到按钮，可点预览图手动选择")
-                            else send(RESULT, "请确认标出的区域确实是跳过按钮", box)
+                            val result = VlmDetector().analyze(image, 60_000L)
+                            if (result.box == null) send(FAILURE, "${result.message}，可点预览图手动框选")
+                            else send(RESULT, "请确认标出的区域确实是跳过按钮", result.box)
                         } finally { image.recycle() }
                     } catch (error: Exception) {
                         send(FAILURE, error.message ?: "学习分析失败，可手动选择按钮")

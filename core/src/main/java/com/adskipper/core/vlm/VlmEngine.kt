@@ -71,7 +71,7 @@ object VlmEngine {
                 message = when {
                     output.isBlank() && SystemClock.elapsedRealtime() - started >= timeoutMs -> "识别超时"
                     output.isBlank() -> "未返回完整结果"
-                    BboxParser.parse(output) == null -> "未找到有效按钮"
+                    BboxParser.parse(output) == null -> BboxParser.failureMessage(output)
                     else -> "已返回按钮位置，等待画面核验"
                 }
                 output.takeIf { it.isNotBlank() }

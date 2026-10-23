@@ -27,4 +27,11 @@ class BboxParserTest {
             """{"bbox_2d": [0,0,0,0]}""", "10 20 100 60",
         )) assertNull(text, BboxParser.parse(text))
     }
+
+    @Test fun aDegenerateModelReplyIsReportedAsInvalidCoordinates() {
+        val reply = """{"bbox_2d": [100, 100, 100, 100]}"""
+        assertNull(BboxParser.parse(reply))
+        assertEquals("模型返回的格式或坐标无效", BboxParser.failureMessage(reply))
+        assertEquals("模型未识别到跳过按钮", BboxParser.failureMessage("""{"bbox_2d": null}"""))
+    }
 }

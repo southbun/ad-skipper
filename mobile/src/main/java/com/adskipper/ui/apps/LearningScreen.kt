@@ -93,7 +93,7 @@ fun LearningScreen(packageName: String, onBack: () -> Unit, onModels: () -> Unit
         if (current != null) {
             Text(current.message)
             if (current.inferenceCount > 0 || current.phase == LearningController.Phase.ANALYZING)
-                Text("本次模型调用 ${current.inferenceCount} 次 · 已用 ${current.elapsedMs / 1000} 秒")
+                Text("本次大模型调用 ${current.inferenceCount} 次 · 已用 ${current.elapsedMs / 1000} 秒")
             if (current.imagePath != null) {
                 val image by produceState<android.graphics.Bitmap?>(null, current.imagePath) {
                     value = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(current.imagePath) }
@@ -138,12 +138,12 @@ fun LearningScreen(packageName: String, onBack: () -> Unit, onModels: () -> Unit
                     }
                 }
                 if (!model.downloaded) {
-                    Text("本地模型尚未下载，可先下载，或直接在预览图上圈选。")
-                    TextButton(onClick = onModels) { Text("前往本地 AI") }
+                    Text("文字识别无需下载。无文字按钮可下载可选视觉模型辅助，或直接在图上框选。")
+                    TextButton(onClick = onModels) { Text("下载可选视觉模型") }
                 }
                 OutlinedButton(onClick = { LearningController.analyze(context) },
-                    enabled = model.downloaded && current.phase != LearningController.Phase.ANALYZING && !saving) {
-                    Text("本地 AI 分析按钮")
+                    enabled = current.phase != LearningController.Phase.ANALYZING && !saving) {
+                    Text("本地识别按钮")
                 }
                 Button(onClick = {
                     saving = true

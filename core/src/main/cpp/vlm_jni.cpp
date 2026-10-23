@@ -113,6 +113,8 @@ static jboolean load_model(
     }, nullptr);
 
     llama_model_params mparams = llama_model_default_params();
+    static ggml_backend_dev_t no_devices[] = { nullptr };
+    mparams.devices = use_gpu ? nullptr : no_devices;
     mparams.n_gpu_layers = use_gpu ? 99 : 0; // offload to Vulkan GPU when available, CPU otherwise
     g.model = llama_model_load_from_file(model_path.chars, mparams);
     if (g.model == nullptr) {
@@ -123,6 +125,9 @@ static jboolean load_model(
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx           = 4096;
+    // Zero GPU layers alone still permits host-op offload in llama.cpp.
+    cparams.offload_kqv     = use_gpu;
+    cparams.op_offload      = use_gpu;
     // GPU dispatches may finish before cancellation is observed; the service also rejects stale frames.
     cparams.abort_callback = should_abort;
     cparams.n_threads       = threads;

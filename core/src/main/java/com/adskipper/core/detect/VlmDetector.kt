@@ -6,19 +6,24 @@ import com.adskipper.core.vlm.BboxParser
 import com.adskipper.core.vlm.VlmEngine
 
 class VlmDetector {
-    suspend fun findSkipButton(bitmap: Bitmap, timeoutMs: Long): Rect? {
-        if (!VlmEngine.isReady) return null
+    data class Result(val box: Rect?, val message: String)
+
+    suspend fun findSkipButton(bitmap: Bitmap, timeoutMs: Long): Rect? = analyze(bitmap, timeoutMs).box
+
+    suspend fun analyze(bitmap: Bitmap, timeoutMs: Long): Result {
+        if (!VlmEngine.isReady) return Result(null, "视觉模型未就绪")
         val scale = minOf(1f, 896f / maxOf(bitmap.width, bitmap.height))
         val image = if (scale == 1f) bitmap else Bitmap.createScaledBitmap(
             bitmap, (bitmap.width * scale).toInt().coerceAtLeast(1),
             (bitmap.height * scale).toInt().coerceAtLeast(1), true,
         )
         try {
-            val output = VlmEngine.infer(image, PROMPT, timeoutMs) ?: return null
-            val norm = BboxParser.parse(output) ?: return null
-            return BboxParser.toPixelRect(norm, bitmap.width, bitmap.height).takeIf {
-                SkipSafety.isButtonBox(it.left, it.top, it.right, it.bottom, bitmap.width, bitmap.height)
-            }
+            val output = VlmEngine.infer(image, PROMPT, timeoutMs)
+                ?: return Result(null, VlmEngine.inferenceStatus.value.message)
+            val norm = BboxParser.parse(output) ?: return Result(null, BboxParser.failureMessage(output))
+            val box = BboxParser.toPixelRect(norm, bitmap.width, bitmap.height)
+            return if (SkipSafety.isButtonBox(box.left, box.top, box.right, box.bottom, bitmap.width, bitmap.height))
+                Result(box, "模型已返回按钮位置") else Result(null, "模型给出的按钮范围无效")
         } finally {
             if (image !== bitmap) image.recycle()
         }
