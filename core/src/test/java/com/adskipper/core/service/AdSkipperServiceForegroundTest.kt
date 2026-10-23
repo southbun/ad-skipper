@@ -63,7 +63,7 @@ class AdSkipperServiceForegroundTest {
     @Test fun connectionStateTracksTheActualServiceLifecycle() {
         assertFalse(AdSkipperService.connected.value)
         try {
-            service.onServiceConnected()
+            ReflectionHelpers.callInstanceMethod<Any?>(service, "onServiceConnected")
             assertTrue(AdSkipperService.connected.value)
             service.onUnbind(Intent())
             assertFalse(AdSkipperService.connected.value)
