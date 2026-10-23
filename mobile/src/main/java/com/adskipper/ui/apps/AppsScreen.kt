@@ -131,7 +131,7 @@ fun AppsScreen(onLearn: (String) -> Unit = {}) {
                             }
                             Switch(checked = checked, onCheckedChange = null, enabled = !item.isProtected)
                         }
-                        if (checked) TextButton(onClick = { onLearn(item.packageName) }) {
+                        if (!item.isProtected && (checked || rules.any { it.packageName == item.packageName })) TextButton(onClick = { onLearn(item.packageName) }) {
                             Text("学习 / 规则（${rules.count { it.packageName == item.packageName }}）")
                         }
                         HorizontalDivider()

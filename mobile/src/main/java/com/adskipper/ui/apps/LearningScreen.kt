@@ -7,12 +7,14 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -30,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -98,35 +101,38 @@ fun LearningScreen(packageName: String, onBack: () -> Unit, onModels: () -> Unit
                 val preview = image
                 DisposableEffect(preview) { onDispose { preview?.recycle() } }
                 preview?.let { bitmap ->
-                    Text("检查绿色框；可在图上拖动，重新框住整个跳过按钮。")
+                    Text("检查绿色框；可在图上拖动，重新框住整个跳过按钮。图片两侧可上下滑动页面。")
                     var draft by remember(current.id) { mutableStateOf<Rect?>(null) }
-                    Box(Modifier.fillMaxWidth().aspectRatio(bitmap.width.toFloat() / bitmap.height)
-                        .pointerInput(bitmap, current.id) {
-                            var start = Offset.Zero
-                            fun pixel(point: Offset) = Offset(
-                                (point.x / size.width * bitmap.width).coerceIn(0f, bitmap.width.toFloat()),
-                                (point.y / size.height * bitmap.height).coerceIn(0f, bitmap.height.toFloat()))
-                            detectDragGestures(
-                                onDragStart = { start = pixel(it); draft = null },
-                                onDragCancel = { draft = null },
-                                onDragEnd = {
-                                    draft?.let { LearningController.select(it, bitmap.width, bitmap.height) }
-                                    draft = null
-                                },
-                            ) { change, _ ->
-                                change.consume()
-                                val end = pixel(change.position)
-                                draft = Rect(min(start.x, end.x).toInt(), min(start.y, end.y).toInt(),
-                                    max(start.x, end.x).toInt(), max(start.y, end.y).toInt())
-                            }
-                        }) {
-                        Image(bitmap.asImageBitmap(), "已采集的广告及待确认按钮", Modifier.fillMaxSize())
-                        Canvas(Modifier.fillMaxSize()) {
-                            (draft ?: current.box)?.let { box ->
-                                val sx = size.width / bitmap.width
-                                val sy = size.height / bitmap.height
-                                drawRect(Color.Green, Offset(box.left * sx, box.top * sy),
-                                    Size(box.width() * sx, box.height() * sy), style = Stroke(3.dp.toPx()))
+                    BoxWithConstraints(Modifier.fillMaxWidth()) {
+                        val ratio = bitmap.width.toFloat() / bitmap.height
+                        Box(Modifier.width(minOf(maxWidth, 420.dp * ratio)).aspectRatio(ratio).align(Alignment.Center)
+                            .pointerInput(bitmap, current.id) {
+                                var start = Offset.Zero
+                                fun pixel(point: Offset) = Offset(
+                                    (point.x / size.width * bitmap.width).coerceIn(0f, bitmap.width.toFloat()),
+                                    (point.y / size.height * bitmap.height).coerceIn(0f, bitmap.height.toFloat()))
+                                detectDragGestures(
+                                    onDragStart = { start = pixel(it); draft = null },
+                                    onDragCancel = { draft = null },
+                                    onDragEnd = {
+                                        draft?.let { LearningController.select(it, bitmap.width, bitmap.height) }
+                                        draft = null
+                                    },
+                                ) { change, _ ->
+                                    change.consume()
+                                    val end = pixel(change.position)
+                                    draft = Rect(min(start.x, end.x).toInt(), min(start.y, end.y).toInt(),
+                                        max(start.x, end.x).toInt(), max(start.y, end.y).toInt())
+                                }
+                            }) {
+                            Image(bitmap.asImageBitmap(), "已采集的广告及待确认按钮", Modifier.fillMaxSize())
+                            Canvas(Modifier.fillMaxSize()) {
+                                (draft ?: current.box)?.let { box ->
+                                    val sx = size.width / bitmap.width
+                                    val sy = size.height / bitmap.height
+                                    drawRect(Color.Green, Offset(box.left * sx, box.top * sy),
+                                        Size(box.width() * sx, box.height() * sy), style = Stroke(3.dp.toPx()))
+                                }
                             }
                         }
                     }

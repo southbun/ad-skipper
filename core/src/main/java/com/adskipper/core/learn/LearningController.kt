@@ -170,7 +170,7 @@ object LearningController {
             withContext(Dispatchers.IO) { LearnedRuleRepository.get(context).save(rule) }
             if (state.value.id == current.id) {
                 discard()
-                mutableState.value = State(packageName = current.packageName, phase = Phase.SAVED,
+                mutableState.value = current.copy(phase = Phase.SAVED, imagePath = null, box = null,
                     message = "规则已保存，下次打开会优先匹配；应用更新或画面变化时会停止命中")
             }
         } catch (error: Exception) { fail("保存失败：${error.message}") }

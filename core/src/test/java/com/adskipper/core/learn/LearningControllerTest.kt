@@ -129,9 +129,14 @@ class LearningControllerTest {
     @Test fun confirmingSavesAReusableRuleAndDeletesTheFullScreenshot() = runTest(dispatcher) {
         capture()
         val file = java.io.File(LearningController.state.value.imagePath!!)
-        LearningController.select(Rect(240, 55, 290, 85), 320, 640)
+        LearningController.analyze(context)
+        val id = LearningController.state.value.id
+        LearningController.receive(id, message(id, LearningWorkerService.INFER), 10)
+        LearningController.receive(id, message(id, LearningWorkerService.RESULT, intArrayOf(240, 55, 290, 85)), 50)
         LearningController.save(context)
         assertEquals(LearningController.Phase.SAVED, LearningController.state.value.phase)
+        assertEquals(1, LearningController.state.value.inferenceCount)
+        assertEquals(50L, LearningController.state.value.elapsedMs)
         assertFalse(file.exists())
         val rules = LearnedRuleRepository(java.io.File(context.filesDir, "learned-rules.json")).rules.value
         assertEquals(1, rules.size)
