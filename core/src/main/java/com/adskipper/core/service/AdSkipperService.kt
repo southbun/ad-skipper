@@ -306,6 +306,12 @@ class AdSkipperService : AccessibilityService() {
             LearnedMatcher.findNode(rules, node, session.packageName, appVersion, display.width(), display.height())?.let { (rule, box) ->
                 return SkipTarget(box.exactCenterX(), box.exactCenterY(), SkipLayer.L0_LEARNED, rule.id)
             }
+            val evidence = NodeMatcher.hasAdEvidence(node)
+            if (snapshot.layer1Enabled && evidence) {
+                NodeMatcher.findSkipNode(node, snapshot.keywords, selfLabels)?.let { box ->
+                    return SkipTarget(box.exactCenterX(), box.exactCenterY(), SkipLayer.L1_NODE)
+                }
+            }
             var image: Bitmap? = null
             suspend fun capture(): Bitmap? {
                 if (image == null) image = ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add)
@@ -318,7 +324,6 @@ class AdSkipperService : AccessibilityService() {
                     }
                 }
             }
-            val evidence = NodeMatcher.hasAdEvidence(node)
             val result = withTimeoutOrNull(remaining) {
                 withContext(Dispatchers.Default) {
                     pipeline.detect(

@@ -72,7 +72,8 @@ class LearnedRuleTest {
     }
 
     @Test fun invalidOrOversizedBoxesAreRejectedAtCreation() {
-        for (bounds in listOf(Rect(0, 0, 320, 640), Rect(-1, 20, 30, 40), Rect(10, 10, 10, 20))) {
+        for (bounds in listOf(Rect(0, 0, 320, 640), Rect(-1, 20, 30, 40), Rect(10, 10, 10, 20),
+                Rect(20, 0, 60, 20), Rect(120, 615, 180, 635))) {
             assertThrows(IllegalArgumentException::class.java) { LearnedMatcher.create(pkg, 7, image(), bounds, emptyList()) }
         }
     }
@@ -82,8 +83,8 @@ class LearnedRuleTest {
         packageName = pkg; className = "android.widget.Button"; viewIdResourceName = id
         this.text = text; isVisibleToUser = true; isEnabled = true; setBoundsInScreen(bounds)
     }
-    private fun root(ad: Boolean = true, text: String = "×"): AccessibilityNodeInfo = node(Rect(0, 0, 320, 640)).apply {
-        shadowOf(this).addChild(node(box, "$pkg:id/close_ad", text))
+    private fun root(ad: Boolean = true, text: String = "×", buttonBox: Rect = box): AccessibilityNodeInfo = node(Rect(0, 0, 320, 640)).apply {
+        shadowOf(this).addChild(node(buttonBox, "$pkg:id/close_ad", text))
         shadowOf(this).addChild(node(Rect(0, 500, 80, 530), text = if (ad) "广告" else "首页"))
     }
 
@@ -105,8 +106,7 @@ class LearnedRuleTest {
         val changed = root()
         shadowOf(changed).addChild(node(Rect(0, 300, 100, 400), "new_id"))
         assertNull(LearnedMatcher.findNode(listOf(rule), changed, pkg, 7, 320, 640))
-        val moved = root()
-        moved.getChild(0)!!.setBoundsInScreen(Rect(10, 55, 60, 85))
+        val moved = root(buttonBox = Rect(10, 55, 60, 85))
         assertNull(LearnedMatcher.findNode(listOf(rule), moved, pkg, 7, 320, 640))
     }
 }

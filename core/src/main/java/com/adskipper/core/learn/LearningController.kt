@@ -14,7 +14,6 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.SystemClock
-import com.adskipper.core.detect.SkipSafety
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -137,7 +136,7 @@ object LearningController {
                 val size = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(current.imagePath, size)
                 val box = values?.takeIf { it.size == 4 }?.let { Rect(it[0], it[1], it[2], it[3]) }
-                if (box == null || !SkipSafety.isButtonBox(box.left, box.top, box.right, box.bottom, size.outWidth, size.outHeight)) {
+                if (box == null || !LearnedMatcher.validButton(box, size.outWidth, size.outHeight)) {
                     fail("AI 返回的位置无效，请手动选择")
                 } else {
                     mutableState.value = current.copy(phase = Phase.REVIEW, box = box, message = text, elapsedMs = elapsed)
@@ -150,7 +149,7 @@ object LearningController {
 
     fun select(box: Rect, width: Int, height: Int) {
         if (state.value.imagePath == null) return
-        if (!SkipSafety.isButtonBox(box.left, box.top, box.right, box.bottom, width, height)) {
+        if (!LearnedMatcher.validButton(box, width, height)) {
             mutableState.value = state.value.copy(message = "框选范围过大或无效，请只圈住跳过按钮")
             return
         }

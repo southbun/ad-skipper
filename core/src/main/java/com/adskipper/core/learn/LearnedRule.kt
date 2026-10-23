@@ -26,12 +26,16 @@ data class LearnedRule(
     val button: List<Int>,
 ) {
     fun valid(): Boolean = id.isNotBlank() && packageName.isNotBlank() && version >= 0 &&
-        SkipSafety.isButtonBox(box.left, box.top, box.right, box.bottom, width, height) &&
+        LearnedMatcher.validButton(box, width, height) &&
         page.size == 16 * 28 && button.size == 20 * 10
 }
 
 /** Persist small visual samples and node descriptors, never a live accessibility node. */
 object LearnedMatcher {
+    fun validButton(box: Rect, width: Int, height: Int): Boolean =
+        SkipSafety.isButtonBox(box.left, box.top, box.right, box.bottom, width, height) &&
+            box.exactCenterY() in height * 0.04f..height * 0.94f
+
     fun nodes(root: AccessibilityNodeInfo?): List<LearnedNode> {
         root ?: return emptyList()
         val result = ArrayList<LearnedNode>()
@@ -53,9 +57,9 @@ object LearnedMatcher {
         .joinToString("") { "%02x".format(it) }
 
     fun create(pkg: String, version: Long, image: Bitmap, box: Rect, nodes: List<LearnedNode>): LearnedRule {
-        require(SkipSafety.isButtonBox(box.left, box.top, box.right, box.bottom, image.width, image.height))
-        val node = nodes.filter { it.viewId.isNotBlank() && it.box.contains(box.centerX(), box.centerY()) &&
-            SkipSafety.isButtonBox(it.box.left, it.box.top, it.box.right, it.box.bottom, image.width, image.height) }
+        require(validButton(box, image.width, image.height))
+        val node = nodes.filter { it.viewId.isNotBlank() && it.className.isNotBlank() &&
+            it.box.contains(box.centerX(), box.centerY()) && validButton(it.box, image.width, image.height) }
             .minByOrNull { it.box.width().toLong() * it.box.height() }
         return LearnedRule(UUID.randomUUID().toString(), pkg, version, System.currentTimeMillis(),
             image.width, image.height, Rect(box), layout(nodes), node,
