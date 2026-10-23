@@ -1,6 +1,9 @@
 package com.adskipper.core.service
 
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.pm.ResolveInfo
+import android.net.Uri
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -59,6 +62,42 @@ class AdSkipperServiceForegroundTest {
     }
 
     private fun current() = sessions.observeForeground(app, true, SystemClock.elapsedRealtime())
+
+    @Suppress("DEPRECATION")
+    private fun installBrowserFixtures() {
+        fun activity(pkg: String) = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply { packageName = pkg; name = "$pkg.BrowserActivity" }
+        }
+        val manager = shadowOf(service.packageManager)
+        val web = Intent(Intent.ACTION_VIEW, Uri.parse("http://example.invalid/"))
+            .addCategory(Intent.CATEGORY_BROWSABLE)
+        for (pkg in listOf("com.taobao.taobao", "com.sina.weibo", "org.example.browser")) {
+            manager.addResolveInfoForIntent(web, activity(pkg))
+        }
+        manager.addResolveInfoForIntent(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_BROWSER), activity("org.example.browser"))
+        manager.addResolveInfoForIntent(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), activity("org.example.home"))
+    }
+
+    @Test fun embeddedWebActivitiesDoNotExcludeTheirWholeApp() {
+        installBrowserFixtures()
+        val excluded = ReflectionHelpers.callInstanceMethod<Set<String>>(service, "resolveExcludedPackages")
+        assertFalse("Taobao's embedded browser must not disable splash detection", "com.taobao.taobao" in excluded)
+        assertFalse("Weibo's embedded browser must not disable splash detection", "com.sina.weibo" in excluded)
+        assertTrue("Unlisted browser applications must still be excluded", "org.example.browser" in excluded)
+        assertTrue("Custom launchers must still be excluded", "org.example.home" in excluded)
+        assertTrue("Known browsers must remain excluded", "com.android.chrome" in excluded)
+    }
+
+    @Test fun aWeiboForegroundEventStartsDetectionWithTheResolvedExclusions() {
+        installBrowserFixtures()
+        ReflectionHelpers.setField(service, "excludedPackages",
+            ReflectionHelpers.callInstanceMethod<Set<String>>(service, "resolveExcludedPackages"))
+        send("com.sina.weibo", "com.sina.weibo")
+        assertNotNull("A normal app with a web activity must enter the detection loop",
+            ReflectionHelpers.getField<Long?>(service, "pollingId"))
+    }
 
     @Test fun connectionStateTracksTheActualServiceLifecycle() {
         assertFalse(AdSkipperService.connected.value)
