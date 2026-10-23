@@ -126,6 +126,17 @@ class LearningControllerTest {
         assertEquals(Rect(240, 55, 290, 85), LearningController.state.value.box)
     }
 
+    @Test fun aBottomButtonProposalCanBeReviewedBeforeSaving() = runTest(dispatcher) {
+        capture()
+        LearningController.analyze(context)
+        val id = LearningController.state.value.id
+        LearningController.receive(id, message(id, LearningWorkerService.RESULT, intArrayOf(262, 594, 308, 620)), 480)
+        assertEquals(LearningController.Phase.REVIEW, LearningController.state.value.phase)
+        assertEquals(Rect(262, 594, 308, 620), LearningController.state.value.box)
+        assertEquals(0, LearningController.state.value.inferenceCount)
+        assertFalse(java.io.File(context.filesDir, "learned-rules.json").exists())
+    }
+
     @Test fun confirmingSavesAReusableRuleAndDeletesTheFullScreenshot() = runTest(dispatcher) {
         capture()
         val file = java.io.File(LearningController.state.value.imagePath!!)

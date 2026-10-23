@@ -62,6 +62,12 @@ class LearnedRuleTest {
         assertNull(LearnedMatcher.findVisual(listOf(rule), Bitmap.createScaledBitmap(image, 640, 1280, false), pkg, 7))
     }
 
+    @Test fun aBottomSplashButtonAboveTheNavigationAreaIsValid() {
+        assertTrue(LearnedMatcher.validButton(Rect(989, 2421, 1148, 2514), 1200, 2608))
+        val rule = LearnedMatcher.create(pkg, 7, image(), Rect(262, 594, 308, 620), emptyList())
+        assertTrue(rule.valid())
+    }
+
     @Test fun flatPagesAndFlatButtonRegionsCannotBecomeVisualMatches() {
         val image = Bitmap.createBitmap(320, 640, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
         val flat = rule(image)
