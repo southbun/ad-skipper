@@ -70,7 +70,7 @@ fun SettingsScreen() {
                 SettingSwitch("本地大模型兜底", settings.vlmEnabled) {
                     scope.launch { app.settingsRepo.setVlmEnabled(it) }
                 }
-                Text("大模型需先在“本地 AI”页面下载。识别只在手机上进行。", style = MaterialTheme.typography.bodySmall)
+                Text("视觉模型仍有兼容性问题，暂时保持关闭。已下载的模型文件会保留在手机。", style = MaterialTheme.typography.bodySmall)
             }
         }
 

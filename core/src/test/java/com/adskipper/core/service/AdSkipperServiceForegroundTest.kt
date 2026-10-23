@@ -62,6 +62,8 @@ class AdSkipperServiceForegroundTest {
 
     @Test fun connectionStateTracksTheActualServiceLifecycle() {
         assertFalse(AdSkipperService.connected.value)
+        shadowOf(service.application).grantPermissions(
+            "${service.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
         try {
             ReflectionHelpers.callInstanceMethod<Any?>(service, "onServiceConnected")
             assertTrue(AdSkipperService.connected.value)

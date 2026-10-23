@@ -92,7 +92,7 @@ class AdSkipperService : AccessibilityService() {
                 withContext(Dispatchers.Default) {
                     DetectionPipeline.create(null, VlmDetector(), selfLabels).detect(
                         null, { image },
-                        AppSettings(layer1Enabled = false, layer2Enabled = false, layer3Enabled = false),
+                        AppSettings(layer1Enabled = false, layer2Enabled = false, layer3Enabled = false, vlmEnabled = true),
                         timeBudgetMs = timeout,
                     ).target
                 }

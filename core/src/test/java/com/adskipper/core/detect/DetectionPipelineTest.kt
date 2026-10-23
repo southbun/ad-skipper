@@ -6,9 +6,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DetectionPipelineTest {
-    private val allOn = AppSettings(layer3Enabled = true)
+    private val allOn = AppSettings(layer3Enabled = true, vlmEnabled = true)
     private val point = 950f to 100f
     private val badge = listOf(OcrLine("广告", 40, 100, 40, 30))
+
+    @Test fun defaultsDoNotInvokeEitherNativeVisualModel() = runTest {
+        val pipeline = DetectionPipeline<Unit>(
+            l1 = { _, _ -> null }, l2 = { _, _ -> DetectionPipeline.OcrPass(null, badge) },
+            l3yolo = { error("YOLO must be opt-in") },
+            l3vlm = { _, _ -> error("VLM must be opt-in") }, clock = { 0L },
+        )
+        assertNull(pipeline.detect(null, { Unit }, AppSettings()).target)
+    }
 
     @Test fun nodeHitNeedsAdEvidence() = runTest {
         val pipeline = DetectionPipeline<Unit>(
