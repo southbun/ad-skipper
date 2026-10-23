@@ -385,8 +385,8 @@ class AdSkipperService : AccessibilityService() {
     @Suppress("DEPRECATION")
     private fun resolveExcludedPackages(): Set<String> {
         val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-        val browser = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("http://example.invalid/"))
-            .addCategory(Intent.CATEGORY_BROWSABLE)
+        // Web-link handlers also include embedded browsers in normal apps.
+        val browser = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_BROWSER)
         val dynamic = listOf(home, browser).flatMap { intent ->
             packageManager.queryIntentActivities(intent, PackageManager.MATCH_ALL).map { it.activityInfo.packageName }
         }
