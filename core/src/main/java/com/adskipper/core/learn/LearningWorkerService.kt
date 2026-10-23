@@ -15,6 +15,7 @@ import com.adskipper.core.detect.OcrDetector
 import com.adskipper.core.detect.VlmDetector
 import com.adskipper.core.model.ModelManager
 import com.adskipper.core.vlm.VlmEngine
+import com.google.mlkit.common.MlKit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -77,6 +78,12 @@ class LearningWorkerService : Service() {
         }
         true
     })
+
+    override fun onCreate() {
+        super.onCreate()
+        // ML Kit's manifest provider runs only in the default app process.
+        MlKit.initialize(this)
+    }
 
     override fun onBind(intent: Intent?): IBinder = messenger.binder
     override fun onDestroy() { terminate(); super.onDestroy() }
