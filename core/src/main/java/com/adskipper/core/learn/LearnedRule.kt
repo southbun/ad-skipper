@@ -121,11 +121,11 @@ object LearnedMatcher {
 
     internal fun sameTemplate(a: LearnedRule, b: LearnedRule): Boolean =
         a.packageName == b.packageName && a.version == b.version && a.width == b.width && a.height == b.height &&
-            near(a.box, b.box) && similar(a.page, b.page, 18, 0.95f) && similar(a.button, b.button, 22, 0.94f)
+            near(a.box, b.box, 3) && similar(a.page, b.page, 18, 0.95f) && similar(a.button, b.button, 22, 0.94f)
 
     private fun pageBox(width: Int, height: Int) = Rect(0, height * 6 / 100, width, height * 94 / 100)
-    private fun near(a: Rect, b: Rect) = abs(a.left - b.left) <= 12 && abs(a.top - b.top) <= 12 &&
-        abs(a.right - b.right) <= 12 && abs(a.bottom - b.bottom) <= 12
+    private fun near(a: Rect, b: Rect, pixels: Int = 12) = abs(a.left - b.left) <= pixels && abs(a.top - b.top) <= pixels &&
+        abs(a.right - b.right) <= pixels && abs(a.bottom - b.bottom) <= pixels
     private fun label(value: String) = value.trim().lowercase().replace(Regex("\\d+"), "#")
         .replace(Regex("\\s+"), " ").take(160)
 

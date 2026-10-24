@@ -52,6 +52,18 @@ class LearnedRuleRepositoryTest {
         assertEquals(upper.createdAt + 1, reopened.last().createdAt)
     }
 
+    @Test fun nearbyDistinctPositionsAreKeptBeyondTheVisualJitterTolerance() {
+        val repo = LearnedRuleRepository(java.io.File(temp.root, "rules.json"))
+        val first = rule()
+        val moved = rule().copy(box = Rect(first.box).apply { offset(-10, 0) })
+        repo.save(first)
+        repo.save(moved)
+        assertEquals(2, repo.rules.value.size)
+        repo.save(first.copy(id = "tiny-jitter", box = Rect(first.box).apply { offset(2, 0) }))
+        assertEquals(2, repo.rules.value.size)
+        assertEquals(first.id, repo.rules.value.last().id)
+    }
+
     @Test fun corruptDataIsPreservedInsteadOfSilentlyOverwritten() {
         val file = temp.newFile("rules.json").apply { writeText("broken existing rules") }
         val repo = LearnedRuleRepository(file)
