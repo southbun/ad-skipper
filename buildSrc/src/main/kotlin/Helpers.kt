@@ -41,7 +41,7 @@ fun Project.setupCore() {
             versionCode = java.time.LocalDateTime.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHH"))
                 .toInt()
-            versionName = "1.3-selfuse.11"
+            versionName = "1.3-selfuse.12"
         }
         buildFeatures.buildConfig = true
     }

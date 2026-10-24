@@ -109,7 +109,7 @@ fun HomeScreen(onSelectApps: () -> Unit) {
         Button(onClick = onSelectApps, modifier = Modifier.fillMaxWidth()) {
             Text("选择应用（已开启 ${settings.enabledPackages.size} 个）")
         }
-        Text("只有在「应用」页开启的应用才会识别开屏广告。", style = MaterialTheme.typography.bodySmall)
+        Text("仅处理已开启的应用；核验成功的文字跳过按钮会自动保存规则，下次优先匹配。", style = MaterialTheme.typography.bodySmall)
 
         OutlinedButton(
             onClick = { context.startActivity(Intent(context, TestAdActivity::class.java)) },

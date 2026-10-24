@@ -144,6 +144,23 @@ class AdSkipperServiceForegroundTest {
         assertTrue(job.isCancelled)
     }
 
+    @Test fun leavingForAnUnselectedAppCancelsPendingAutomaticLearning() {
+        send(app, app)
+        val learning = Job()
+        ReflectionHelpers.setField(service, "autoLearningJob", learning)
+        send("another.app", "another.app")
+        assertTrue(learning.isCancelled)
+    }
+
+    @Test fun disablingTheCurrentAppCancelsPendingAutomaticLearning() {
+        send(app, app)
+        val learning = Job()
+        ReflectionHelpers.setField(service, "autoLearningJob", learning)
+        ReflectionHelpers.setField(service, "settings", AppSettings())
+        send(app, app)
+        assertTrue(learning.isCancelled)
+    }
+
     @Test fun disablingTheCurrentAppStopsFurtherRecognition() {
         send(app, app)
         val job = ReflectionHelpers.getField<Job>(service, "pollJob")

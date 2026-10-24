@@ -23,7 +23,8 @@ class DetectionPipeline<I>(
         }
     }
     data class Result(val target: SkipTarget?, val timings: List<Pair<SkipLayer, Long>>,
-                      val missReason: String = "未找到符合条件的跳过按钮")
+                      val missReason: String = "未找到符合条件的跳过按钮",
+                      val ocrLines: List<OcrLine> = emptyList())
 
     suspend fun detect(
         root: AccessibilityNodeInfo?,
@@ -57,7 +58,8 @@ class DetectionPipeline<I>(
             if (pass.hit != null && (adEvidence || pass.countdown != null)) {
                 return Result(SkipTarget(pass.hit.first, pass.hit.second, SkipLayer.L2_OCR,
                     countdown = pass.countdown,
-                    requiresCountdownProof = pass.requiresCountdownProof || !adEvidence), timings)
+                    requiresCountdownProof = pass.requiresCountdownProof || !adEvidence), timings,
+                    ocrLines = pass.lines)
             }
         }
         // The image detectors must also see ads that expose no readable ad badge.

@@ -27,10 +27,14 @@ import com.adskipper.core.data.SettingsRepository
 import com.adskipper.core.data.StatsRepository
 import com.adskipper.core.detect.DetectionPipeline
 import com.adskipper.core.detect.FrameVerifier
+import com.adskipper.core.detect.OcrDetector
+import com.adskipper.core.detect.OcrLine
 import com.adskipper.core.detect.VlmDetector
 import com.adskipper.core.detect.VisualFallback
 import com.adskipper.core.model.ModelManager
 import com.adskipper.core.learn.LearnedMatcher
+import com.adskipper.core.learn.AutomaticLearning
+import com.adskipper.core.learn.LearnedNode
 import com.adskipper.core.learn.LearnedRuleRepository
 import com.adskipper.core.learn.LearningController
 import com.adskipper.core.learn.LearningOverlay
@@ -43,8 +47,10 @@ import com.adskipper.core.detect.SplashSessionTracker
 import com.adskipper.core.detect.YoloSkipDetector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
@@ -92,6 +98,7 @@ class AdSkipperService : AccessibilityService() {
     private var pollJob: Job? = null
     private var pollUpdates: Channel<Unit>? = null
     private var feedbackJob: Job? = null
+    private var autoLearningJob: Job? = null
     private var modelJob: Job? = null
     private var pollingId: Long? = null
     private lateinit var stats: StatsRepository
@@ -210,7 +217,7 @@ class AdSkipperService : AccessibilityService() {
             getSystemService(PowerManager::class.java).isInteractive
         val session = sessions.observeForeground(pkg, allowed, SystemClock.elapsedRealtime())
         if (session == null) {
-            if (!allowed) pollJob?.cancel()
+            if (!allowed) { pollJob?.cancel(); autoLearningJob?.cancel() }
             return
         }
         if (pollingId == session.id) {
@@ -220,6 +227,7 @@ class AdSkipperService : AccessibilityService() {
         clearVisualFallback()
         pollJob?.cancel()
         feedbackJob?.cancel()
+        autoLearningJob?.cancel()
         overlay.dismiss()
         pollingId = session.id
         val updates = Channel<Unit>(Channel.CONFLATED).also { pollUpdates = it }
@@ -266,6 +274,8 @@ class AdSkipperService : AccessibilityService() {
         pollingId = null
         feedbackJob?.cancel()
         feedbackJob = null
+        autoLearningJob?.cancel()
+        autoLearningJob = null
     }
 
     private fun clearVisualFallback() {
@@ -293,12 +303,13 @@ class AdSkipperService : AccessibilityService() {
         val revision = settingsRevision
         val snapshot = settings
         val rules = learnedRules.rules.value.filter { it.packageName == session.packageName }
-        val appVersion = if (rules.isNotEmpty()) runCatching {
+        val appVersion = runCatching {
             packageManager.getPackageInfo(session.packageName, 0).longVersionCode
-        }.getOrDefault(-1) else -1
+        }.getOrDefault(-1)
         val display = getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
         val pipeline = DetectionPipeline.create(if (snapshot.layer3Enabled) yolo else null, null, selfLabels)
         val frames = ArrayList<Bitmap>()
+        var ocrLines: List<OcrLine>? = null
         val started = SystemClock.elapsedRealtime()
         suspend fun pass(node: AccessibilityNodeInfo): SkipTarget? {
             val remaining = sessions.remainingMs(session, SystemClock.elapsedRealtime())
@@ -335,6 +346,7 @@ class AdSkipperService : AccessibilityService() {
                     )
                 }
             }
+            ocrLines = result?.ocrLines
             if (sessions.isCurrent(session, SystemClock.elapsedRealtime()) && result?.target == null) {
                 lastMissReason = result?.missReason ?: "画面识别超时"
             }
@@ -385,6 +397,16 @@ class AdSkipperService : AccessibilityService() {
             if (verified.layer == SkipLayer.L0_LEARNED &&
                 (first.detail != verified.detail || learnedRules.rules.value.none { it.id == verified.detail })) return false
 
+            // Reuse OCR frames; a first node-only lesson may capture for at most 300 ms.
+            val learningImage = if (verified.layer == SkipLayer.L1_NODE || verified.layer == SkipLayer.L2_OCR) {
+                frames.lastOrNull() ?: withTimeoutOrNull(minOf(300L,
+                    sessions.remainingMs(session, SystemClock.elapsedRealtime()))) {
+                    ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add)
+                }
+            } else null
+            val learningNodes = if (learningImage != null) LearnedMatcher.nodes(liveRoot) else emptyList()
+            val nodeAdEvidence = NodeMatcher.hasAdEvidence(liveRoot)
+
             val node = if (verified.layer == SkipLayer.L1_NODE) {
                 NodeMatcher.findSkipNodeInfo(liveRoot, snapshot.keywords, selfLabels)?.takeIf {
                     if (!it.refresh() || !it.isEnabled || !it.isVisibleToUser ||
@@ -416,6 +438,10 @@ class AdSkipperService : AccessibilityService() {
             if (completed) {
                 showClickFeedback(session, windowId, revision, verified, viaNode)
                 stats.record(session.packageName, verified.layer.name, SystemClock.elapsedRealtime() - started)
+                learningImage?.let { image ->
+                    frames.remove(image)
+                    learnAfterClick(session, revision, verified, image, ocrLines, learningNodes, appVersion, nodeAdEvidence)
+                }
             } else if (settings.debugOverlay) {
                 overlay.update("点击未执行：${verified.layer}")
             }
@@ -426,6 +452,61 @@ class AdSkipperService : AccessibilityService() {
             false
         } finally {
             frames.forEach { if (!it.isRecycled) it.recycle() }
+        }
+    }
+
+    private fun learnAfterClick(session: SplashSessionTracker.Session, revision: Long, target: SkipTarget,
+                                image: Bitmap, lines: List<OcrLine>?, nodes: List<LearnedNode>,
+                                version: Long, nodeAdEvidence: Boolean) {
+        val clickedAt = SystemClock.elapsedRealtime()
+        fun allowed(): Boolean = revision == settingsRevision && settings.masterEnabled &&
+            appAllowed(session.packageName) && !LearningController.collecting(session.packageName) &&
+            getSystemService(PowerManager::class.java).isInteractive &&
+            SystemClock.elapsedRealtime() - session.startedAt < 8_000L &&
+            rootInActiveWindow?.packageName?.toString() == session.packageName
+        autoLearningJob?.cancel()
+        autoLearningJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            var afterImage: Bitmap? = null
+            try {
+                withTimeoutOrNull(2_500L) {
+                    val ocr = OcrDetector()
+                    // ML Kit has no task cancellation; retain its bitmap until recognition finishes.
+                    suspend fun recognize(bitmap: Bitmap) = withContext(NonCancellable + Dispatchers.Default) {
+                        ocr.recognize(bitmap)
+                    }
+                    val rule = withContext(Dispatchers.Default) {
+                        AutomaticLearning.propose(session.packageName, version, image, target,
+                            lines?.takeIf { it.isNotEmpty() } ?: recognize(image), nodes, nodeAdEvidence)
+                    } ?: return@withTimeoutOrNull
+                    image.recycle()
+                    delay(700)
+                    if (!allowed()) return@withTimeoutOrNull
+                    val afterRoot = rootInActiveWindow ?: return@withTimeoutOrNull
+                    if (!afterRoot.refresh() || NodeMatcher.hasAdEvidence(afterRoot)) return@withTimeoutOrNull
+                    val after = ScreenshotCapturer.capture(this@AdSkipperService) ?: return@withTimeoutOrNull
+                    afterImage = after
+                    val elapsed = SystemClock.elapsedRealtime() - clickedAt
+                    val afterLines = recognize(after)
+                    val confirmed = withContext(Dispatchers.Default) {
+                        AutomaticLearning.confirmsExit(rule, after, afterLines, false, elapsed)
+                    }
+                    if (!confirmed || !allowed()) return@withTimeoutOrNull
+                    val current = rootInActiveWindow ?: return@withTimeoutOrNull
+                    if (!current.refresh() || !SkipSafety.sameWindow(session.packageName, afterRoot.windowId,
+                            current.packageName?.toString(), current.windowId) || NodeMatcher.hasAdEvidence(current) ||
+                        NodeMatcher.findSkipNode(current, settings.keywords, selfLabels) != null) return@withTimeoutOrNull
+                    // Keep the final settings/foreground check and atomic write on the same dispatcher.
+                    learnedRules.save(rule)
+                    if (settings.debugOverlay) overlay.update("已自动学习跳过按钮，下次优先匹配")
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (allowed() && settings.debugOverlay) overlay.update("本次规则未保存，可在应用页手动学习")
+            } finally {
+                if (!image.isRecycled) image.recycle()
+                afterImage?.let { if (!it.isRecycled) it.recycle() }
+            }
         }
     }
 
