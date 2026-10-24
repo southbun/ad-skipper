@@ -26,6 +26,8 @@ class AutomaticLearningTest {
     private fun ad() = Bitmap.createBitmap(320, 640, Bitmap.Config.ARGB_8888).apply {
         for (y in 0 until height) for (x in 0 until width)
             setPixel(x, y, Color.rgb(x * 255 / width, y * 255 / height, (x + y) % 256))
+        for (y in 54 until 86) for (x in 237 until 293)
+            setPixel(x, y, if ((x / 4 + y / 4) % 2 == 0) Color.BLACK else Color.WHITE)
     }
     private fun changed() = Bitmap.createBitmap(320, 640, Bitmap.Config.ARGB_8888).apply {
         eraseColor(Color.WHITE)
@@ -81,6 +83,10 @@ class AutomaticLearningTest {
 
     @Test fun nodeAdEvidenceCanConfirmAnOcrTextButton() {
         assertNotNull(propose(listOf(skip), nodeEvidence = true))
+    }
+
+    @Test fun aFeaturelessImageWithoutANodeIdCannotCreateAnUnusableRule() {
+        assertNull(AutomaticLearning.propose(pkg, 7, changed(), target, listOf(skip, badge), emptyList(), false))
     }
 
     @Test fun disappearingTextAloneDoesNotConfirmAnExit() {

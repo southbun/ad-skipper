@@ -29,7 +29,9 @@ object AutomaticLearning {
         if (countdown != null && countdown < 3) return null
         if (!nodeAdEvidence && lines.none { KeywordMatcher.isAdEvidence(it.text) } &&
             !(target.requiresCountdownProof && countdown != null)) return null
-        return LearnedMatcher.create(pkg, version, image, box, nodes)
+        return LearnedMatcher.create(pkg, version, image, box, nodes).takeIf {
+            it.node != null || LearnedMatcher.findVisual(listOf(it), image, pkg, version) != null
+        }
     }
 
     fun confirmsExit(rule: LearnedRule, after: Bitmap, lines: List<OcrLine>,
