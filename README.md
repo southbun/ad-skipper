@@ -1,184 +1,65 @@
-# Ad Skipper — 本地模型开屏广告跳过
+# 开屏跳过：个人本地 AI 版本
 
-[![CI](https://github.com/madeye/ad-skipper/actions/workflows/ci.yml/badge.svg)](https://github.com/madeye/ad-skipper/actions/workflows/ci.yml)
+基于 [madeye/ad-skipper](https://github.com/madeye/ad-skipper) 修改，保留原 MIT 许可证与版权信息。
 
-基于 Android 无障碍服务的开屏广告自动跳过应用，全部检测在本地完成。
-签名 APK 可在 [Releases](https://github.com/madeye/ad-skipper/releases) 直接下载。
-检测采用分层降级策略：
+## 当前范围
 
-| 层级 | 方式 | 典型延迟 | 适用场景 |
-|---|---|---|---|
-| L1 | 无障碍节点文本匹配（跳过 / Skip / skip_ad…） | <10ms | 原生 UI 的大多数 App |
-| L2 | ML Kit 本地中文 OCR | ~100ms | Flutter / Unity / 游戏等无 UI 树的 App |
-| L3a | 内置 YOLO11n 跳过按钮检测器（ncnn Vulkan + CPU/NEON 回退，~5MB） | ~20-300ms | 倒计时圆环、混淆按钮、纯图片按钮 |
-| L3b | 本地 VLM Grounding（llama.cpp + GGUF，需下载） | ~2-4s | YOLO 未命中的疑难场景兜底 |
+- Android 11+、arm64-v8a；可与原版并存，包名 `com.southbun.adskipper`。
+- 默认所有应用均未启用；在「应用」页搜索已安装应用的名称或包名，逐个打开开关。选择自动保存，可筛选「只看已开启」。旧版升级也从空启用名单开始。
+- 各应用的学习页可开启「持续手动示范学习」。每次进入前台的 8 秒内先匹配已存规则；未命中时显示示范提示，用户直接点广告的跳过按钮。临时触摸层隐藏后采样并转发同一位置的点按，核验页面变化、原按钮消失且仍在目标应用后自动保存；此路径不调用文字识别、OCR 或大模型。每个应用保留最近 8 种位置/样式，重复样式更新，开关跨启动保留。未开启示范的应用沿用普通识别。
+- 示范是明确提示的触摸转发，每次点按可能短暂等待截图；没有广告时点提示取消本轮，下次启动继续等待。单指滑动只转发、不保存，多指操作取消本轮。学习窗口结束、切换应用、锁屏、关闭功能或进入手动截图采集时移除触摸层。触摸前保留最近的短时画面，转发前重新截图核对原按钮区域，防止广告已经结束后误点首页；截图失败或画面变化时退出本轮，用户可直接重新点按。保留已存规则，不新增权限或持久保存示范截图。
+- 截图接口可能将安全窗口遮黑而非返回失败；示范浮窗只在画面满足现有规则的可复用条件时显示，黑屏、纯色或系统栏以外不可读的画面不会接管触摸。
+- 已开启的应用会自动学习：明确、唯一的文字跳过按钮通过点击核验后，保存到现有规则库，下次启动优先匹配。复用 OCR 截图；控件路径首次采样最多等待 300ms，分析和保存放在点击之后。保存要求前台应用仍一致、跳过文字及广告标识消失、页面明显变化；倒计时不足 3 秒、纯 ×、多个候选或识别失败时不自动保存。截图只在内存中使用，手动学习仍可补充遗漏。
+- 仅已选应用进入前台后最多检查 8 秒；同一 App 的内容变化不会延长窗口。首次检测立即执行，界面变化唤醒下一次检测，无事件时每 250ms 重试；截图仍保留至少 400ms 的间隔。
+- 默认开启控件树与随包中文 OCR。YOLO 和可选下载的 InternVL3-2B 视觉大模型因真机兼容性问题默认关闭，已有开关选择保留。
+- 视觉模型直接检查启动截图，不要求 OCR 或控件先读出“广告”标识。控件/OCR 快速路径保留广告上下文核验；没有标识的完整“跳过/Skip + 数字”候选仍须验证倒计时递减。关键词不匹配“跳过绑定”“跳过教程”等业务文字。
+- 按钮保留尺寸、边界检查，不再限定四角。点击前核对包名、窗口、设置与 8 秒会话时限。
+- VLM 仅接受剩余会话时间中最多 4 秒内完成的结果；原生图像编码可能超出时限，返回后的超时结果会丢弃。有效结果重新截图核对按钮区域和页面，画面明显变化则放弃旧坐标。
+- VLM 在后台分析，控件/OCR/YOLO 继续扫描稍后出现的按钮；快速路径命中、切换应用或关闭开关时取消后台任务，不等待大模型完成才点击。
+- L1 保留按钮控件，优先调用控件点击；文字位于按钮内部时查找就近且大小合理的可点击父控件，跳过不可用按钮。控件拒绝点击时才退回触摸，不在接受后重复点击。
+- 每次前台会话最多接受一次点击；统计显示“已发送点击”。L1 点击后复查按钮是否仍在，状态提示 4 秒后自动隐藏。
+- 开启“显示点击状态”后会提示正在识别、正在确认倒计时；8 秒内未点击时给出未识别或复查失败的原因。
+- “本地 AI”页显示当前进程的实际识别次数、最近结果和耗时。界面暂时不可读时保留原有识别预算；自测浮窗不会被误判为离开测试页。
+- 首页区分“运行中”和“已授权，服务未连接”；大模型的 C++ 运行异常会转成错误状态，暂停本进程的模型识别，保留控件/OCR/YOLO 路径。
+- 桌面、系统设置与浏览器默认不操作。
+- 应用列表中这些受保护应用显示禁用开关；自测模式只在手动打开内置模拟广告页时生效。
+- 自动排除浏览器时只查询浏览器应用入口，不因淘宝、微博等 App 含有内置网页 Activity 而排除整个 App。
+- 截图仅用于本地识别，不写入文件；状态浮窗不保存截图。禁用应用备份与设备迁移数据。
+- INTERNET 仅用于用户主动下载两个模型文件：ModelScope、Hugging Face 和 hf-mirror 的 HTTPS GET；不上传截图，不包含远程控制。模型固定版本、大小与 SHA-256，校验后才允许加载。拒绝明文网络，不申请 ACCESS_NETWORK_STATE。
+- 不使用亮屏持续保活脉冲或精确闹钟，只保留通知与识别窗口内的短时唤醒锁。
 
-命中即短路，L2/L3 只有在前一层未命中时才执行；命中后通过无障碍手势模拟点击。
+## 安装与验证
 
-## 演示
+1. 从本仓库 Actions 的 `ad-skipper-selfuse` 产物下载 APK。
+2. 安装后按应用内按钮开启无障碍服务；部分系统需要先在应用信息中允许受限设置。
+3. 在「应用」页搜索并开启需要跳过的 App，首页显示已开启数量。小米等机型按实际情况允许后台运行；自测时在应用设置开启“自测模式”，再打开首页“模拟广告测试”。
+4. 要启用大模型，在“本地 AI”页面连接 Wi-Fi 下载约 1.5GB，等待“模型已就绪”。下载支持暂停与续传，未下载时控件/OCR/YOLO 照常工作。
+5. 先测试少量常用 App，同时检查正常引导页、应用切换、广告自动结束和关闭总开关。记录 VLM 是否赶在广告结束前完成。
+6. 遇到不确定场景会放弃操作。真机覆盖率、厂商后台限制与耗电需要逐项验证。Xiaomi 17 Ultra / HyperOS 4 的真机日志已出现大模型 Vulkan `ErrorDeviceLost` 和 YOLO OpenMP 初始化崩溃；隔离测试中，大模型替代路径仅图像编码就耗时约 14–29 秒。该设备先使用控件/OCR，视觉模型另行适配。
 
-<img src="docs/demo.gif" width="270" alt="模拟开屏广告被自动跳过的录屏" />
+测试包没有配置个人签名时使用 CI 临时调试签名；不同构建可能需要卸载旧测试包重装。日用前配置下面的固定签名。
 
-模拟器录屏（`docs/demo.mp4` 为原始视频）：冷启动 App 后连续打开两次内置的
-模拟开屏广告（首页 → 模拟广告测试，右上角为 跳过 30 倒计时按钮），
-无障碍服务约 1 秒内自动点击跳过并返回首页。真机效果见 v1.0 release notes。
+## 云端构建
 
-## 工程结构
+GitHub Actions 执行单元测试、Android lint、APK 构建，并检查最终 APK 权限、备份标志、签名和 SHA-256。
+ncnn 固定到 20260526；llama.cpp 固定为原作者基准使用的 d6cf0b288dfac7015cfe705286e612c66a376a9c；Vulkan-Headers 固定为 8864cdc896bbc2a9b6eb36b3218fc9ef57908d77。构建前校验源代码压缩包 SHA-256。
+主分支推送、PR 和手动运行可触发构建。
 
+首次测试可直接构建 debug APK。固定签名 release 使用本仓库四个 Actions Secrets：
+
+- `ANDROID_KEYSTORE_BASE64`：个人签名 keystore 的 Base64 内容
+- `ANDROID_KEYSTORE_PASSWORD`：keystore 密码
+- `ANDROID_KEY_ALIAS`：密钥别名
+- `ANDROID_KEY_PASSWORD`：密钥密码
+
+密钥不要提交到仓库。配置齐全后，工作流会生成签名 release；未配置时生成可安装的 debug 测试包。
+
+本地构建需要 JDK 17、Android SDK 36、NDK、CMake 3.22.1、glslc 与 SPIRV-Headers。Linux 上按工作流“Fetch pinned local VLM dependencies”步骤准备 llama.cpp 与 Vulkan-Headers，再准备 ncnn：
+
+```sh
+curl -fL -o ncnn.zip https://github.com/Tencent/ncnn/releases/download/20260526/ncnn-20260526-android-vulkan.zip
+echo '26909c92eed35afed4a966b5e9e503fcb0a529691ea3f910ec2c94a4fff52804  ncnn.zip' | sha256sum -c
+unzip -q ncnn.zip
+mv ncnn-20260526-android-vulkan core/src/main/cpp/ncnn
+./gradlew :core:testDebugUnitTest :mobile:testDebugUnitTest :mobile:lintDebug :mobile:assembleDebug
 ```
-buildSrc/          # setupCommon/setupCore/setupApp 构建约定
-core/              # Android library：无障碍服务、检测管线、VLM JNI、模型管理、数据层
-  src/main/cpp/    # llama.cpp（vendored）+ ncnn（prebuilt）+ vlm_jni.cpp + yolo_jni.cpp
-mobile/            # 应用模块：Compose UI（首页/设置/模型/统计）+ 模拟广告测试页
-```
-
-## 构建
-
-1. 准备 Android SDK / NDK / CMake（`local.properties` 配置 `sdk.dir`）。
-2. 拉取 llama.cpp 源码（已 gitignore，体积大）：
-
-   ```bash
-   git clone --depth 1 https://github.com/ggml-org/llama.cpp.git core/src/main/cpp/llama.cpp
-   # GitHub 不通时可用镜像：
-   # git clone --depth 1 https://gitee.com/mirrors/llama.cpp.git core/src/main/cpp/llama.cpp
-   ```
-
-3. 下载 ncnn Android 预编译库（YOLO 检测器用，已 gitignore）：
-
-   ```bash
-   gh release download 20260526 -R Tencent/ncnn -p ncnn-20260526-android-vulkan.zip
-   unzip ncnn-20260526-android-vulkan.zip
-   mv ncnn-20260526-android-vulkan core/src/main/cpp/ncnn
-   ```
-
-4. 构建并安装：
-
-   ```bash
-   ./gradlew :mobile:assembleDebug
-   adb install -r mobile/build/outputs/apk/debug/mobile-debug.apk
-   ```
-
-依赖仓库官方源在前、阿里云镜像兜底，国内可直接构建。每次 push / PR 的
-CI（GitHub Actions，`.github/workflows/ci.yml`）会跑单元测试并完整构建
-APK（Linux runner 上从源码安装 Vulkan/SPIRV 头文件、用 NDK 自带 glslc，
-llama.cpp/ncnn 按上述步骤自动拉取），构建产物以 artifact 形式留存。
-
-## GPU 推理
-
-llama.cpp 编译时开启 `GGML_VULKAN=ON`：推理通过 ggml Vulkan 后端把全部层
-offload 到 GPU（JNI 侧 `n_gpu_layers=99`，mtmd `use_gpu=true`），设备无
-Vulkan 时自动回退 CPU，无需额外配置。
-
-Host 端编译依赖（macOS）：
-
-```bash
-brew install vulkan-headers spirv-headers shaderc   # glslc 由 shaderc 提供
-```
-
-交叉编译的细节都在 `core/src/main/cpp/CMakeLists.txt`：
-
-- Vulkan 头文件取自 Khronos Vulkan-Headers（macOS 用 Homebrew，Linux 装到
-  `/usr/local`），而非 NDK sysroot——
-  ggml-vulkan 需要的 `vulkan/vulkan.hpp` NDK 不自带；只有 `libvulkan.so`
-  从 NDK 对应 `ANDROID_PLATFORM_LEVEL` 的 API 目录取用。
-- `vulkan-shaders-gen`（编译期生成 shader 的 host 工具）由嵌套 CMake
-  （ExternalProject）构建，继承了 Ninja generator 却不继承含 ninja 的
-  PATH，因此生成的 `vk-host-toolchain.cmake` 会把 `CMAKE_MAKE_PROGRAM`
-  固定为 SDK 自带的 ninja，编译器固定为 host clang。
-- `SPIRV-Headers_DIR` 指向 Homebrew 安装的 SPIRV-Headers cmake 包。
-
-`core/src/main/cpp/patches/*.patch` 下的本地补丁会在 CMake configure 阶段自动
-应用到 vendored 的 llama.cpp 源码上，无需手动打补丁。
-
-在 Android 模拟器上测试 GPU 推理时，启动参数必须加 `-gpu host -feature Vulkan`；
-否则模拟器默认给客户机的是 SwiftShader（CPU 类型）Vulkan 设备，ggml-vulkan 会拒绝
-该设备并静默回退到 CPU 推理。
-
-## 使用
-
-1. 打开 App，按首页引导开启无障碍服务（设置 → 无障碍 → 广告跳过）。
-2. 默认 L1/L2/L3 全部开启：L3 首先运行内置的 YOLO11n 跳过按钮检测器
-   （在 2026-08 grounding 基准上 19/20 命中、0 次误点 CTA，超过 1.5GB 级
-   VLM，见 [vlm-bench REPORT](https://github.com/madeye/vlm-bench/blob/main/REPORT.md)），无需下载。
-   检测器跑在 ncnn 上（Vulkan compute，无 Vulkan / 驱动异常时自动回退
-   CPU/NEON），模型为 Ultralytics 官方 NCNN 导出（fp16，约 5MB，val 集
-   mAP50 0.992）。
-   开屏窗口期（应用会话开始后 8 秒内）由固定节奏轮询驱动：跳过启动过渡的
-   前 500ms（OEM 启动窗口显示的是上次会话的快照）后每 750ms 跑一遍管线，
-   命中后下个周期复查、未消失则重试（每会话最多 3 次点击）——开屏广告
-   往往在启动过渡后才渲染且不发无障碍事件，靠事件驱动会整场错过。
-   窗口期外仅事件驱动的 L1/L2 关键词层生效，图像层不运行，避免在普通界面误点。
-   服务同时以前台服务（specialUse 类型 + 常驻静默通知）保活，降低被
-   OEM 后台清理误杀的概率。
-3. 可选兜底：「模型」页可下载 VLM 处理 YOLO 未命中的疑难场景。推荐
-   InternVL3 2B（Q4_K_M + Q8_0 mmproj，约 1.5GB，896px 输入 16/20 命中）；
-   备选 Qwen2.5-VL 3B（约 2.8GB，672px 输入精度相当）。源：ModelScope，
-   失败自动回退 hf-mirror；也支持手动导入 GGUF + mmproj，选中后自动切换。
-4. 「设置」页可配置关键词、白名单、调试悬浮窗（命中时显示层级与坐标）。
-
-APK 不内置 VLM（约 52MB，其中 YOLO 检测器约 5MB）；VLM 为可选下载项。
-
-## 模型来源
-
-- 推荐下载：`ggml-org/InternVL3-2B-Instruct-GGUF`（Q4_K_M + Q8_0 mmproj，
-  约 1.5GB，896px 输入，基准 16/20 命中，为可用模型中最小）
-- 备选：`ggml-org/Qwen2.5-VL-3B-Instruct-GGUF`（约 2.8GB，672px 输入，
-  精度相当）；也支持经 SAF 手动导入任意 GGUF + mmproj（自定义模型）
-- 下载源 ModelScope 优先、hf-mirror 兜底（huggingface.co 国内不可达），
-  模型清单见 `core/src/main/java/com/adskipper/core/model/ModelInfo.kt`
-- llama.cpp 侧走 mtmd API（`tools/mtmd`）；构建时 clone 的是最新 master，
-  若上游 API 变动需同步调整 `vlm_jni.cpp`。
-
-## YOLO 检测器训练
-
-内置的 L3a 跳过按钮检测器在 [madeye/vlm-bench](https://github.com/madeye/vlm-bench)
-中训练与评测（该仓库同时包含选型 VLM 的 grounding 基准与结论，见其
-[REPORT.md](https://github.com/madeye/vlm-bench/blob/main/REPORT.md)）。完整流程：
-
-1. **合成数据集**（`gen_yolo_data.py`）：2400 训练 + 240 验证张合成开屏广告，
-   随机配色 / 字体 / 版式 / 按钮样式与位置，含硬负样本（倒计时、CTA 按钮、
-   「{n}秒后自动进入」等易混文案），约 10% 图完全没有跳过按钮。首轮模型在
-   真实界面上 16/16 误报，因此追加约 300 张真实 UI 截图增广作为负样本微调。
-2. **训练**：Ultralytics YOLO11n（约 2.6M 参数），640 letterbox 输入；
-   `skip_v1` 先在纯合成集上训练，再以负样本微调得到 `skip_v2`
-   （15 epochs，batch 32，可在 Apple MPS 上完成）。
-3. **评测**（`eval_yolo.py`）：val 集 mAP50 0.992 / P 0.98 / R 0.972；
-   grounding 基准 19/20 命中、0 次误点 CTA、宿主 CPU 约 21ms/张，
-   优于所测的全部 VLM（含 InternVL3-2B）。
-4. **导出**：`yolo export format=ncnn`（fp16，约 5MB）产出
-   `yolo.ncnn.param` / `yolo.ncnn.bin`，替换本仓库
-   `core/src/main/assets/` 下的同名文件即可生效（输出布局 `[1,5,8400]`，
-   坐标为 640 letterbox 像素，解析见 `YoloSkipDetector`）。
-
-注意：训练与评测目前均基于合成数据，真实开屏广告的召回未系统验证；
-收集真实截图做微调 / 评测是收益最高的下一步。
-
-## 网络说明
-
-- JVM/Gradle 不读 `*_PROXY` 环境变量；需要代理直连 dl.google.com 的机器请把
-  `systemProp.http(s).proxyHost/Port` 写进 **用户级** `~/.gradle/gradle.properties`
-  （不要提交到仓库的 `gradle.properties`，否则 CI 与他人构建会被本机代理搞挂）。
-- 依赖仓库官方源在前、阿里云镜像兜底；插件仓库只用官方源（阿里云 gradle-plugin 镜像元数据不全）。
-- 模型下载走 OkHttp，ModelScope 国内直连，无需代理。
-
-## 测试
-
-```bash
-./gradlew :core:testDebugUnitTest   # BboxParser / KeywordMatcher / 管线降级顺序
-```
-
-模拟器端到端：安装后打开 App → 设置页开启「自测模式」→ 首页「模拟广告测试」，
-观察模拟广告页被自动点击「跳过」并关闭（统计页新增一条记录）。已验证的链路
-（2026-08）：模拟器 debug/release（R8）构建下 L1 与 L2（关 L1/L3 后 OCR 命中）、
-模拟器 L3a YOLO（自测模式）；真机（Xiaomi 14 / HyperOS）L1、L2、L3a 及真实
-开屏广告（脉脉热启动）经开屏轮询成功跳过。
-
-注意：L3b（VLM）链路已通过编译与 llama.cpp mtmd API 对齐验证，但端到端推理
-（下载约 1.5GB 模型 + 真机推理）尚未实测，首次使用请先小流量验证。
-
-## 已知限制
-
-- `FLAG_SECURE` 页面（银行等）截图为黑屏，此时只有不依赖截图的 L1 生效。
-- L3 已支持 GPU（Vulkan）推理，无 Vulkan 设备时自动回退 CPU（见「GPU 推理」）；
-  已加超时（默认 4s）放弃机制；NPU 后端留作后续扩展。
-- VLM 效果依赖所选模型，bbox 解析对输出格式做了 0-1 / 0-100 / 0-1000 三种归一化容错。

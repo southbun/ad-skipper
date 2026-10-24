@@ -2,100 +2,76 @@ package com.adskipper.core.detect
 
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
-import timber.log.Timber
 
-/**
- * L1: scan the accessibility node tree for a "skip" button (<10ms).
- */
 object NodeMatcher {
+    fun findSkipNode(root: AccessibilityNodeInfo?, keywords: Collection<String>, excluded: Collection<String> = emptySet()): Rect? {
+        val node = findSkipNodeInfo(root, keywords, excluded) ?: return null
+        return Rect().also(node::getBoundsInScreen)
+    }
 
-    fun findSkipNode(
-        root: AccessibilityNodeInfo?,
-        keywords: Collection<String>,
-        excluded: Collection<String> = emptySet(),
-    ): Rect? {
+    fun findSkipNodeInfo(root: AccessibilityNodeInfo?, keywords: Collection<String>, excluded: Collection<String> = emptySet()): AccessibilityNodeInfo? {
         root ?: return null
-        // A keyword match whose bounds cover (nearly) the whole screen is
-        // never the skip button — e.g. Douban's `id/skip` is a full-screen,
-        // text-less container; tapping its center hits the ad click-through
-        // area. Real skip buttons are small.
-        val rootBounds = Rect().also { root.getBoundsInScreen(it) }
-        val maxArea = rootBounds.width() * rootBounds.height() / 3
-        val clickableHits = ArrayList<Rect>()
-        val otherHits = ArrayList<Rect>()
+        val screen = Rect().also(root::getBoundsInScreen)
         val queue = ArrayDeque<AccessibilityNodeInfo>()
+        val clickable = ArrayList<AccessibilityNodeInfo>()
+        val other = ArrayList<AccessibilityNodeInfo>()
         queue.add(root)
-        while (queue.isNotEmpty()) {
+        var visited = 0
+        while (queue.isNotEmpty() && visited++ < 300) {
             val node = queue.removeFirst()
-            if (node.isVisibleToUser) {
-                val textMatch =
-                    KeywordMatcher.matches(node.text?.toString(), keywords, excluded)
-                        ?.takeIf { KeywordMatcher.isPlausibleButtonText(node.text?.toString()) }
-                val descMatch =
-                    KeywordMatcher.matches(node.contentDescription?.toString(), keywords, excluded)
-                        ?.takeIf { KeywordMatcher.isPlausibleButtonText(node.contentDescription?.toString()) }
-                val idMatch = KeywordMatcher.matches(
-                    node.viewIdResourceName?.substringAfterLast('/'), keywords)
-
-                if (textMatch != null || descMatch != null || idMatch != null) {
-                    val bounds = Rect()
-                    node.getBoundsInScreen(bounds)
-                    if (!bounds.isEmpty && bounds.width() * bounds.height() <= maxArea) {
-                        Timber.d(
-                            "L1 match text=%s desc=%s id=%s clickable=%b bounds=%s",
-                            node.text, node.contentDescription,
-                            node.viewIdResourceName, node.isClickable, bounds,
-                        )
-                        (if (node.isClickable) clickableHits else otherHits).add(bounds)
-                    }
+            if (node.isVisibleToUser && (
+                    KeywordMatcher.matches(node.text?.toString(), keywords, excluded) != null ||
+                    KeywordMatcher.matches(node.contentDescription?.toString(), keywords, excluded) != null ||
+                    KeywordMatcher.matches(node.viewIdResourceName?.substringAfterLast('/'), keywords) != null)) {
+                val target = clickTarget(node, root, screen)
+                if (target != null) {
+                    (if (target.isClickable) clickable else other).add(target)
                 }
             }
-            for (i in 0 until node.childCount) {
-                node.getChild(i)?.let(queue::addLast)
-            }
+            for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
         }
-        // Prefer explicitly clickable nodes; a tap gesture at the bounds
-        // center works even when the node itself is not marked clickable.
-        return clickableHits.firstOrNull() ?: otherHits.firstOrNull()
+        return clickable.firstOrNull() ?: other.firstOrNull()
     }
 
-    /** True if any node in the tree (bounded by [cap]) carries an ad-SDK
-     *  class or view-id fingerprint — see [AdSdkSignatures]. Splash trees
-     *  are tiny, so this stays cheap. */
-    fun hasAdSdkMarker(root: AccessibilityNodeInfo?, cap: Int): Boolean {
+    private fun safeBounds(node: AccessibilityNodeInfo, screen: Rect): Rect? {
+        val box = Rect().also(node::getBoundsInScreen)
+        return box.takeIf {
+            !it.isEmpty && screen.contains(it) && it.width() <= screen.width() * 0.4f &&
+                it.height() <= screen.height() * 0.12f &&
+                it.width().toLong() * it.height() <= screen.width().toLong() * screen.height() / 20
+        }
+    }
+
+    private fun clickTarget(node: AccessibilityNodeInfo, root: AccessibilityNodeInfo, screen: Rect): AccessibilityNodeInfo? {
+        val label = safeBounds(node, screen) ?: return null
+        var current = node
+        repeat(4) {
+            if (!current.isEnabled || !current.isVisibleToUser || current.windowId != root.windowId ||
+                (current.packageName != null && current.packageName != root.packageName)) return null
+            if (current.isClickable) {
+                return current.takeIf { safeBounds(it, screen)?.contains(label) == true }
+            }
+            val parent = current.parent ?: return node
+            if (parent == root) return node.takeIf { parent.isEnabled && !parent.isClickable }
+            current = parent
+        }
+        return null
+    }
+
+    fun hasAdEvidence(root: AccessibilityNodeInfo?): Boolean {
         root ?: return false
-        var count = 0
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(root)
-        while (queue.isNotEmpty()) {
+        var visited = 0
+        while (queue.isNotEmpty() && visited++ < 120) {
             val node = queue.removeFirst()
-            if (AdSdkSignatures.matchesClassName(node.className?.toString()) ||
-                AdSdkSignatures.matchesViewId(node.viewIdResourceName)
-            ) return true
-            if (++count >= cap) return false
-            for (i in 0 until node.childCount) {
-                node.getChild(i)?.let(queue::addLast)
-            }
+            if (node.isVisibleToUser && (
+                    KeywordMatcher.isAdEvidence(node.text?.toString()) ||
+                    KeywordMatcher.isAdEvidence(node.contentDescription?.toString()) ||
+                    AdSdkSignatures.matchesClassName(node.className?.toString()) ||
+                    AdSdkSignatures.matchesViewId(node.viewIdResourceName))) return true
+            for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
         }
         return false
-    }
-
-    /** Node count with an early exit at [cap]. Splash/ad screens are a
-     *  handful of views (the ad SDK's container), while real app UI is
-     *  hundreds — used to decide whether a screen can still be a splash ad
-     *  after the core splash window has elapsed. */
-    fun treeSize(root: AccessibilityNodeInfo?, cap: Int): Int {
-        root ?: return 0
-        var count = 0
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
-        while (queue.isNotEmpty()) {
-            val node = queue.removeFirst()
-            if (++count >= cap) return count
-            for (i in 0 until node.childCount) {
-                node.getChild(i)?.let(queue::addLast)
-            }
-        }
-        return count
     }
 }

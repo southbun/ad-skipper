@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -30,6 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.adskipper.AdSkipperApp
 import com.adskipper.core.data.AppSettings
+import com.adskipper.core.service.AdSkipperService
 import com.adskipper.ui.TestAdActivity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -41,12 +44,13 @@ private fun isAccessibilityEnabled(context: Context): Boolean {
 }
 
 @Composable
-fun HomeScreen() {
+fun HomeScreen(onSelectApps: () -> Unit) {
     val context = LocalContext.current
     val app = AdSkipperApp.get(context)
     val settings by app.settingsRepo.settings
         .collectAsState(initial = AppSettings())
     val scope = rememberCoroutineScope()
+    val serviceConnected by AdSkipperService.connected.collectAsState()
 
     // Poll accessibility status while this screen is visible.
     val serviceEnabled by produceState(initialValue = isAccessibilityEnabled(context)) {
@@ -59,6 +63,7 @@ fun HomeScreen() {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -67,16 +72,20 @@ fun HomeScreen() {
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    if (serviceEnabled) "无障碍服务：已开启" else "无障碍服务：未开启",
+                    when {
+                        serviceConnected -> "无障碍服务：运行中"
+                        serviceEnabled -> "无障碍服务：已授权，服务未连接"
+                        else -> "无障碍服务：未开启"
+                    },
                     style = MaterialTheme.typography.titleMedium,
-                    color = if (serviceEnabled) MaterialTheme.colorScheme.primary
+                    color = if (serviceConnected) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.error,
                 )
                 Spacer(Modifier.height(8.dp))
-                if (!serviceEnabled) {
+                if (!serviceConnected) {
                     Button(onClick = {
                         context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    }) { Text("去开启") }
+                    }) { Text(if (serviceEnabled) "关闭后重新开启服务" else "去开启") }
                 }
             }
         }
@@ -89,13 +98,18 @@ fun HomeScreen() {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("自动跳过广告", style = MaterialTheme.typography.titleMedium)
+                Text("跳过功能总开关", style = MaterialTheme.typography.titleMedium)
                 Switch(
                     checked = settings.masterEnabled,
                     onCheckedChange = { v -> scope.launch { app.settingsRepo.setMasterEnabled(v) } },
                 )
             }
         }
+
+        Button(onClick = onSelectApps, modifier = Modifier.fillMaxWidth()) {
+            Text("选择应用（已开启 ${settings.enabledPackages.size} 个）")
+        }
+        Text("仅处理已开启的应用。可在各应用的学习页开启持续示范：手动点跳过后保存，多种位置和样式下次优先匹配。", style = MaterialTheme.typography.bodySmall)
 
         OutlinedButton(
             onClick = { context.startActivity(Intent(context, TestAdActivity::class.java)) },

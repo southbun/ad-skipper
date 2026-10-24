@@ -2,812 +2,788 @@ package com.adskipper.core.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
-import android.app.AlarmManager
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.graphics.Path
-import android.graphics.PixelFormat
-import android.os.Handler
-import android.os.Looper
+import android.graphics.Bitmap
+import android.graphics.Rect
+import android.os.Build
 import android.os.PowerManager
-import android.view.Gravity
-import android.view.View
+import android.os.SystemClock
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
-import com.adskipper.core.data.AppProfileRepository
+import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Toast
+import androidx.core.content.ContextCompat
 import com.adskipper.core.data.AppSettings
 import com.adskipper.core.data.SettingsRepository
 import com.adskipper.core.data.StatsRepository
-import com.adskipper.core.detect.AdEvidenceTracker
-import com.adskipper.core.detect.AdSdkSignatures
 import com.adskipper.core.detect.DetectionPipeline
-import com.adskipper.core.detect.NodeMatcher
-import com.adskipper.core.detect.SkipTarget
-import com.adskipper.core.detect.YoloSkipDetector
-import com.adskipper.core.model.ModelCatalog
+import com.adskipper.core.detect.FrameVerifier
+import com.adskipper.core.detect.OcrDetector
+import com.adskipper.core.detect.OcrLine
+import com.adskipper.core.detect.VlmDetector
+import com.adskipper.core.detect.VisualFallback
 import com.adskipper.core.model.ModelManager
+import com.adskipper.core.learn.LearnedMatcher
+import com.adskipper.core.learn.AutomaticLearning
+import com.adskipper.core.learn.DemonstrationLearning
+import com.adskipper.core.learn.DemonstrationOverlay
+import com.adskipper.core.learn.DemonstrationTouch
+import com.adskipper.core.learn.LearnedNode
+import com.adskipper.core.learn.LearnedRuleRepository
+import com.adskipper.core.learn.LearningController
+import com.adskipper.core.learn.LearningOverlay
 import com.adskipper.core.vlm.VlmEngine
+import com.adskipper.core.detect.NodeMatcher
+import com.adskipper.core.detect.SkipLayer
+import com.adskipper.core.detect.SkipSafety
+import com.adskipper.core.detect.SkipTarget
+import com.adskipper.core.detect.SplashSessionTracker
+import com.adskipper.core.detect.YoloSkipDetector
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import timber.log.Timber
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 
-/**
- * Watches window changes, runs the three-tier detection pipeline and taps
- * the skip button via a dispatched gesture.
- */
 class AdSkipperService : AccessibilityService() {
+    companion object {
+        private val mutableConnected = MutableStateFlow(false)
+        val connected: StateFlow<Boolean> = mutableConnected
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-    private lateinit var settingsRepo: SettingsRepository
-    private lateinit var statsRepo: StatsRepository
-    private lateinit var profileRepo: AppProfileRepository
-    private lateinit var modelManager: ModelManager
-    private lateinit var engine: VlmEngine
-    private lateinit var overlay: DebugOverlay
-    private var yolo: YoloSkipDetector? = null
-
-    /** Latest settings snapshot, collected continuously. */
-    private val settings = MutableStateFlow(AppSettings())
-
-    /** Per-package cooldown to avoid click loops. */
-    private val lastAttemptAt = ConcurrentHashMap<String, Long>()
-
-    /** Foreground-session tracking for the L3 splash-window gate. */
-    private val lastEventAt = ConcurrentHashMap<String, Long>()
-    private val sessionStartAt = ConcurrentHashMap<String, Long>()
-    private val processing = AtomicBoolean(false)
-
-    /** Active splash-window pollers, one per package. */
-    private val pollJobs = ConcurrentHashMap<String, Job>()
-
-    /** Positive "this screen is an ad" evidence, per session; image L3 taps
-     *  require it. See [AdEvidenceTracker]. */
-    private val adEvidence = AdEvidenceTracker { android.os.SystemClock.elapsedRealtime() }
-
-    /** Session-start stamps whose outcome has been persisted, so a session
-     *  whose poller runs twice is counted once. */
-    private val recordedSessions = ConcurrentHashMap<String, Long>()
-
-    /** Held for the duration of a splash window; see holdSplashWakeLock. */
-    @Volatile
-    private var splashWakeLock: android.os.PowerManager.WakeLock? = null
-
-    /** Self-thaw machinery for OEM process freezers; see startThawPulse. */
-    private val pulseHandler = Handler(Looper.getMainLooper())
-    private var pulseView: View? = null
-    @Volatile
-    private var pulseActive = false
-
-    private val pulseRunnable = object : Runnable {
-        override fun run() {
-            if (!pulseActive) return
-            if (pulseView == null) ensurePulseView() // retry after transient add failures
-            try {
-                pulseView?.sendAccessibilityEvent(
-                    AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
-            } catch (t: Throwable) {
-                Timber.w(t, "thaw pulse failed")
+        @Suppress("DEPRECATION")
+        fun protectedPackages(context: Context): Set<String> {
+            val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+            // Web-link handlers also include embedded browsers in normal apps.
+            val browser = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_BROWSER)
+            val dynamic = listOf(home, browser).flatMap { intent ->
+                context.packageManager.queryIntentActivities(intent, PackageManager.MATCH_ALL)
+                    .map { it.activityInfo.packageName }
             }
-            pulseHandler.postDelayed(this, THAW_PULSE_INTERVAL_MS)
+            return AppSettings.PROTECTED_PACKAGES + dynamic + setOf(
+                "com.android.quicksearchbox", "com.google.android.googlequicksearchbox", "com.miui.personalassistant",
+                "com.android.chrome", "com.chrome.beta", "com.chrome.dev", "org.mozilla.firefox",
+                "com.microsoft.emmx", "com.opera.browser", "com.brave.browser", "com.android.browser",
+                "com.mi.globalbrowser", "com.heytap.browser", "com.coloros.browser", "com.vivo.browser",
+                "com.huawei.browser", "com.sec.android.app.sbrowser", "com.tencent.mtt", "com.baidu.browser.apps",
+                "com.UCMobile", "com.ucmobile.lite", "com.quark.browser",
+            )
         }
     }
+    // Serialize session, switch and foreground changes on the main thread.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val sessions = SplashSessionTracker()
+    private var settings = AppSettings(masterEnabled = false)
+    private var settingsRevision = 0L
+    private var pollJob: Job? = null
+    private var pollUpdates: Channel<Unit>? = null
+    private var feedbackJob: Job? = null
+    private var autoLearningJob: Job? = null
+    private var demonstrationJob: Job? = null
+    private var modelJob: Job? = null
+    private var pollingId: Long? = null
+    private lateinit var stats: StatsRepository
+    private lateinit var overlay: DebugOverlay
+    private lateinit var visualFallback: VisualFallback<Bitmap>
+    private var learningOverlay: LearningOverlay? = null
+    private var demonstrationOverlay: DemonstrationOverlay? = null
+    private var demonstrationFrame: Bitmap? = null
+    private var demonstrationFrameAt = 0L
+    private var demonstrationWindowId = -1
+    private val learnedRules by lazy { LearnedRuleRepository.get(this) }
+    private var learningCaptureJob: Job? = null
+    private var yolo: YoloSkipDetector? = null
+    private var excludedPackages = AppSettings.PROTECTED_PACKAGES
+    private var selfLabels = emptySet<String>()
+    private var selfTestVisible = false
+    private var lastMissReason = "未找到符合条件的跳过按钮"
 
-    /** Pulse only needs to run while the screen is on (no splash ads on a dark
-     *  screen); SCREEN_OFF stops it so the process can be frozen while idle.
-     *  The matching SCREEN_ON restart is best-effort — HyperOS does not
-     *  deliver broadcasts into a frozen process — so the watchdog alarm below
-     *  is the guaranteed restart path. */
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            when (intent.action) {
-                Intent.ACTION_SCREEN_ON -> startThawPulse()
-                Intent.ACTION_SCREEN_OFF -> stopThawPulse()
+            if (intent.action == Intent.ACTION_SCREEN_OFF) {
+                stopSession()
+                learningOverlay?.hide()
+                if (LearningController.state.value.phase == LearningController.Phase.CAPTURING)
+                    LearningController.fail("屏幕已关闭，请重新采集")
             }
         }
     }
 
-    /** Alarm delivery is the one mechanism HyperOS GreezeManager reliably
-     *  thaws a frozen process for (logcat: `THAW uid=... reason : alarm`).
-     *  Accessibility-event delivery does NOT thaw (verified 2026-08-08: a
-     *  Douban cold start delivered zero events into the frozen service), so
-     *  once frozen — e.g. after a screen-off period — the process would stay
-     *  frozen forever without this. Each firing restarts the pulse chain if
-     *  the screen is on, then re-arms. */
-    private val watchdogListener = AlarmManager.OnAlarmListener {
-        if (getSystemService(PowerManager::class.java).isInteractive) startThawPulse()
-        scheduleWatchdog()
-    }
-
-    private fun scheduleWatchdog() {
-        try {
-            // Non-wakeup on purpose: while the screen is on the pulse chain
-            // prevents freezing anyway, and an alarm that expired during
-            // sleep is delivered the moment the device wakes — which is
-            // exactly when a thaw is needed. Costs zero wakeups.
-            getSystemService(AlarmManager::class.java).setExact(
-                AlarmManager.ELAPSED_REALTIME,
-                android.os.SystemClock.elapsedRealtime() + WATCHDOG_INTERVAL_MS,
-                "adskipper:thaw-watchdog",
-                watchdogListener,
-                pulseHandler,
-            )
-        } catch (t: Throwable) {
-            Timber.w(t, "watchdog schedule failed")
-        }
-    }
-
-    /** Home/launcher apps resolved from the device, always skipped: splash ads
-     *  never appear there, and this app's own icon sits on the home screen —
-     *  an image L3 false positive would tap it. The static DEFAULT_WHITELIST
-     *  can't cover every OEM launcher, and users with an old persisted
-     *  whitelist never receive new defaults. */
-    private var homePackages: Set<String> = emptySet()
-
-    /** Browser apps resolved from the device, always skipped: web pages are
-     *  full of "跳过/Skip" labels and ad-like imagery that L1–L3 would tap,
-     *  and a stray tap inside a page can navigate, submit or dismiss things
-     *  the user is reading. Splash-ad skipping is for native apps only. */
-    private var browserPackages: Set<String> = emptySet()
-
-    /** This app's launcher label ("广告跳过") — it contains the keyword "跳过",
-     *  so L1/L2 must never treat it as a skip button. */
-    private var selfLabels: Set<String> = emptySet()
-
-    /** True while the mock-ad test page is the app's foreground window. */
-    @Volatile
-    private var selfTestAdVisible = false
-
     override fun onServiceConnected() {
-        Timber.i("AdSkipperService connected")
-        startKeepaliveForeground()
-        settingsRepo = SettingsRepository(this)
-        statsRepo = StatsRepository(this)
-        profileRepo = AppProfileRepository(this)
-        modelManager = ModelManager(this)
-        engine = VlmEngine()
+        stats = StatsRepository(this)
         overlay = DebugOverlay(this)
-        yolo = YoloSkipDetector(this).takeIf { it.isReady }
-        // Cold-init of the YOLO native engine (Vulkan device + pipeline
-        // creation + model load) takes ~3s; paid inside the first splash
-        // window it would eat most of it. Warm it up shortly after connect
-        // instead — but NOT immediately: ncnn's Vulkan load_model SIGSEGVd
-        // when called ~1-3s after process start on HyperOS (tombstone:
-        // null deref in Net::load_model, uptime 3s), whereas the same init
-        // succeeds once the process has settled.
-        scope.launch {
-            delay(YOLO_WARMUP_DELAY_MS)
-            yolo?.warmUp()
-        }
-        homePackages = resolveHomePackages() + HOME_SURFACE_PACKAGES
-        browserPackages = resolveBrowserPackages() + BROWSER_PACKAGES - SPLASH_AD_BROWSERS
+        learningOverlay = LearningOverlay(this)
+        demonstrationOverlay = DemonstrationOverlay(this)
+        visualFallback = VisualFallback(
+            scope,
+            detect = { image, timeout ->
+                withContext(Dispatchers.Default) {
+                    DetectionPipeline.create(null, VlmDetector(), selfLabels).detect(
+                        null, { image },
+                        AppSettings(layer1Enabled = false, layer2Enabled = false, layer3Enabled = false, vlmEnabled = true),
+                        timeBudgetMs = timeout,
+                    ).target
+                }
+            },
+            release = { it.recycle() },
+        )
+        excludedPackages = protectedPackages(this)
         selfLabels = setOf(applicationInfo.loadLabel(packageManager).toString())
-        scope.launch { settingsRepo.seedDefaultLauncher() }
-
-        // Freeze prevention must be continuous, not splash-scoped: HyperOS
-        // freezes this process ~1s after the last accessibility event and
-        // does NOT thaw it to deliver new events — a frozen service misses
-        // the app-launch event entirely, so no poller ever starts and the
-        // whole pipeline is dead (verified 2026-08-08 on Douban cold starts).
-        registerReceiver(screenReceiver, IntentFilter().apply {
-            addAction(Intent.ACTION_SCREEN_ON)
-            addAction(Intent.ACTION_SCREEN_OFF)
-        })
-        if (getSystemService(PowerManager::class.java).isInteractive) startThawPulse()
-        scheduleWatchdog()
-
+        ContextCompat.registerReceiver(
+            this, screenReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        startNotification()
+        mutableConnected.value = true
         scope.launch {
-            settingsRepo.settings.collect { new ->
-                val prev = settings.value
-                settings.value = new
-                if (new.layer3Enabled &&
-                    (new.activeModelId != prev.activeModelId ||
-                        new.vlmThreads != prev.vlmThreads ||
-                        !engine.isReady)
-                ) {
-                    loadActiveModel(new)
+            LearningController.state.collect { learning ->
+                if (learning.phase != LearningController.Phase.ARMED) learningOverlay?.hide()
+                else { stopSession(); updateLearningOverlay() }
+            }
+        }
+        scope.launch {
+            learnedRules.rules.collect {
+                settingsRevision++
+                stopSession()
+            }
+        }
+        scope.launch {
+            SettingsRepository(this@AdSkipperService).settings.collect { stored ->
+                val new = stored.copy(vlmEnabled = false)
+                if (new != settings) {
+                    settingsRevision++
+                    stopSession()
+                    overlay.dismiss()
+                }
+                settings = new
+                updateLearningOverlay()
+                modelJob?.cancel()
+                modelJob = launch(Dispatchers.IO) {
+                    if (new.masterEnabled && new.vlmEnabled) {
+                        ModelManager(this@AdSkipperService).loadModel()
+                    } else {
+                        VlmEngine.release()
+                    }
+                }
+                if (new.masterEnabled && new.layer3Enabled && yolo == null) {
+                    yolo = YoloSkipDetector(this@AdSkipperService).takeIf { it.isReady }
+                    launch {
+                        if (settings.masterEnabled && settings.layer3Enabled) {
+                            withContext(Dispatchers.Default) { yolo?.warmUp() }
+                        }
+                    }
                 }
             }
         }
-    }
-
-    /** Promote to a foreground service so aggressive OEM task killers don't
-     *  reap the process. Best-effort: the service still works without it. */
-    private fun startKeepaliveForeground() {
-        try {
-            val channel = android.app.NotificationChannel(
-                KEEPALIVE_CHANNEL_ID,
-                "运行状态",
-                android.app.NotificationManager.IMPORTANCE_MIN,
-            )
-            getSystemService(android.app.NotificationManager::class.java)
-                .createNotificationChannel(channel)
-            val notification = android.app.Notification.Builder(this, KEEPALIVE_CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.ic_menu_view)
-                .setContentTitle("广告跳过运行中")
-                .setOngoing(true)
-                .build()
-            startForeground(
-                KEEPALIVE_NOTIFICATION_ID,
-                notification,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-            )
-        } catch (t: Throwable) {
-            Timber.e(t, "startForeground failed")
-        }
-    }
-
-    private fun resolveHomePackages(): Set<String> = try {
-        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-        packageManager.queryIntentActivities(
-            intent,
-            PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ALL.toLong()),
-        ).mapTo(mutableSetOf()) { it.activityInfo.packageName }
-            .also { Timber.i("home packages: %s", it) }
-    } catch (t: Throwable) {
-        Timber.e(t, "resolving home packages failed")
-        emptySet()
-    }
-
-    /** Apps that handle a plain http URL with no host filter are browsers;
-     *  deep-link handlers for specific hosts don't match a bare host like
-     *  this one. The static BROWSER_PACKAGES list backstops OEM browsers
-     *  that hide from the query (e.g. behind role-based resolution). */
-    private fun resolveBrowserPackages(): Set<String> = try {
-        val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("http://example.invalid/"))
-            .addCategory(Intent.CATEGORY_BROWSABLE)
-        packageManager.queryIntentActivities(
-            intent,
-            PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ALL.toLong()),
-        ).mapTo(mutableSetOf()) { it.activityInfo.packageName }
-            .also { Timber.i("browser packages: %s", it) }
-    } catch (t: Throwable) {
-        Timber.e(t, "resolving browser packages failed")
-        emptySet()
-    }
-
-    private suspend fun loadActiveModel(s: AppSettings) {
-        val model = ModelCatalog.byId(s.activeModelId) ?: ModelCatalog.default
-        val paths = modelManager.modelPaths(model)
-        if (paths == null) {
-            Timber.w("L3 enabled but model %s not downloaded", model.id)
-            return
-        }
-        Timber.i("loading VLM model %s", model.id)
-        engine.load(paths.first, paths.second, s.vlmThreads)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) return
-        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        ) return
-
-        val pkg = event.packageName?.toString() ?: return
-        val s = settings.value
-        if (!s.masterEnabled) return
-        if (!s.layer1Enabled && !s.layer2Enabled && !s.layer3Enabled) return
-        if (pkg == packageName) {
-            // Self-test only exempts the mock-ad page, not the whole app:
-            // our own UI is full of keyword-bearing text（自动跳过广告、
-            // 白名单（不跳过的应用）…）that L1/L2 would happily tap.
-            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-                selfTestAdVisible =
-                    event.className?.toString()?.endsWith("TestAdActivity") == true
+        if (event == null || (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+                event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)) return
+        val eventPackage = event.packageName?.toString()
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED && eventPackage != null &&
+            eventPackage !in settings.enabledPackages &&
+            !(eventPackage == packageName && settings.selfTest && selfTestVisible)) return
+        // A temporarily unreadable tree is not a foreground switch. Keep the original budget.
+        val pkg = rootInActiveWindow?.packageName?.toString()
+            ?: event.packageName?.toString()?.takeIf {
+                event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+                    (it in excludedPackages || (it != packageName && it !in settings.enabledPackages))
+            } ?: return
+        val activityClass = event.className?.toString()
+        updateLearningOverlay()
+        if (pkg == packageName && event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            activityClass?.endsWith("Activity") == true) {
+            selfTestVisible = activityClass.endsWith("TestAdActivity")
+        }
+        val allowed = settings.masterEnabled &&
+            (settings.layer1Enabled || settings.layer2Enabled || settings.layer3Enabled || settings.vlmEnabled ||
+                pkg in settings.demonstrationPackages ||
+                learnedRules.rules.value.any { it.packageName == pkg }) &&
+            !LearningController.collecting(pkg) &&
+            appAllowed(pkg) &&
+            getSystemService(PowerManager::class.java).isInteractive
+        val session = sessions.observeForeground(pkg, allowed, SystemClock.elapsedRealtime())
+        if (session == null) {
+            if (!allowed) {
+                pollJob?.cancel(); autoLearningJob?.cancel(); demonstrationJob?.cancel()
+                clearDemonstration()
             }
-            if (!s.selfTest || !selfTestAdVisible) return
-        }
-        if (pkg in s.whitelist || pkg in homePackages || pkg in browserPackages) return
-
-        val now = android.os.SystemClock.elapsedRealtime()
-
-        // NOTE: a foreign package's window-state change must NOT cancel this
-        // package's splash poller. HyperOS fires transient permissioncontroller
-        // window events during cold starts; cancelling here killed Douban's
-        // poller mid-window and — since a video splash ad emits no further
-        // accessibility events — it never restarted, so the ad played out.
-        // Tapping through a genuinely different foreground window is instead
-        // prevented by the active-window guard in runDetection().
-
-        val prevEvent = lastEventAt.put(pkg, now)
-        if (prevEvent == null || now - prevEvent > SESSION_GAP_MS) {
-            sessionStartAt[pkg] = now
-            adEvidence.onSessionStart(pkg)
-        }
-        val inSplashWindow = now - (sessionStartAt[pkg] ?: 0L) <= SPLASH_WINDOW_MS
-
-        // Splash-ad SDK activities announce themselves in window-state
-        // events (穿山甲 TTAppOpenAdActivity, 优量汇 ADActivity, …) — free,
-        // OCR-independent ad evidence.
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            AdSdkSignatures.matchesClassName(event.className?.toString())
-        ) {
-            Timber.d("ad SDK window in %s: %s", pkg, event.className)
-            adEvidence.noteSdkSignal(pkg)
-        }
-
-        // Splash ads only exist in the first seconds after an app (re)starts,
-        // and that window is covered by a polling loop rather than by events:
-        // a launch emits a single early event burst — while a stale snapshot
-        // starting window still covers the not-yet-interactive UI — and the ad
-        // countdown that follows often emits no events at all. The self-test
-        // mock ad goes through the same poller so it exercises the real path.
-        if (inSplashWindow || (s.selfTest && pkg == packageName)) {
-            startSplashPoller(pkg)
             return
         }
-
-        // Steady state, event-driven: keyword layers only — unlike L1/L2
-        // matching, image-based L3 detectors would occasionally see "skip
-        // buttons" in ordinary UI and tap them.
-        val effective = s.copy(layer3Enabled = false)
-        if (!effective.layer1Enabled && !effective.layer2Enabled) return
-        val last = lastAttemptAt[pkg] ?: 0L
-        if (now - last < ATTEMPT_COOLDOWN_MS) return
-        if (processing.get()) return
-        scope.launch { runDetection(pkg, effective) }
-    }
-
-    /** Runs the pipeline on a fixed cadence for the duration of [pkg]'s splash
-     *  window. Polling sidesteps the two ways event-driven detection loses the
-     *  race against a splash ad: the launch burst arrives too early (stale
-     *  snapshot on screen, targets not yet tappable) and the ad itself emits no
-     *  events. Re-detection on the next tick doubles as tap verification — a
-     *  target that survived a tap gets tapped again, up to [SPLASH_MAX_TAPS]. */
-    private fun startSplashPoller(pkg: String) {
-        if (pollJobs.containsKey(pkg)) return
-        val job = scope.launch(start = CoroutineStart.LAZY) {
-            delay(SPLASH_POLL_INITIAL_DELAY_MS)
-            var taps = 0
-            var ticks = 0
-            // Apps with a long ad-free history run in a degraded mode: L1
-            // only, no screenshots/OCR — near-zero cost and zero image-layer
-            // misclick surface. Every PROBE_EVERY-th session probes at full
-            // strength in case the app started showing ads; an SDK signal
-            // (event-driven, works regardless of mode) lifts the downgrade
-            // instantly.
-            val barren = if (pkg == packageName) 0 else try {
-                profileRepo.barrenSessions(pkg)
-            } catch (t: Throwable) {
-                Timber.w(t, "profile read failed"); 0
-            }
-            val downgraded = barren >= BARREN_SESSIONS_TO_DOWNGRADE &&
-                barren % PROBE_EVERY_SESSIONS != 0
-            if (downgraded) Timber.d("%s: %d ad-free sessions — L1-only mode", pkg, barren)
+        if (pollingId == session.id) {
+            pollUpdates?.trySend(Unit)
+            return
+        }
+        clearVisualFallback()
+        pollJob?.cancel()
+        feedbackJob?.cancel()
+        autoLearningJob?.cancel()
+        demonstrationJob?.cancel()
+        clearDemonstration()
+        overlay.dismiss()
+        pollingId = session.id
+        val updates = Channel<Unit>(Channel.CONFLATED).also { pollUpdates = it }
+        lastMissReason = "未找到符合条件的跳过按钮"
+        pollJob = scope.launch {
+            val wakeLock = getSystemService(PowerManager::class.java)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "adskipper:splash")
+            val initialVlmCount = VlmEngine.inferenceStatus.value.count
             try {
-                while (isActive && taps < SPLASH_MAX_TAPS) {
-                    val s = settings.value
-                    if (!s.masterEnabled) break
-                    if (!s.layer1Enabled && !s.layer2Enabled && !s.layer3Enabled) break
-                    val selfTesting = s.selfTest && pkg == packageName
-                    if (selfTesting && !selfTestAdVisible) break
-                    val start = sessionStartAt[pkg] ?: break
-                    val elapsed = android.os.SystemClock.elapsedRealtime() - start
-                    // Hupu's splash ad appeared ~8s after launch (slow app
-                    // init on a white splash) and then played for ~40s in
-                    // total event silence — a poller stopping at
-                    // SPLASH_WINDOW_MS provides zero coverage for it. Poll to
-                    // the extended window, stretched further while a confirmed
-                    // countdown says the ad is still running.
-                    val deadline = maxOf(
-                        SPLASH_WINDOW_EXTENDED_MS,
-                        minOf(adEvidence.pollUntil(pkg) - start, SPLASH_WINDOW_HARD_CAP_MS),
-                    )
-                    if (!selfTesting && elapsed > deadline) break
-                    ticks++
-                    val effective =
-                        if (downgraded && !adEvidence.isAdConfirmed(pkg)) {
-                            s.copy(layer2Enabled = false, layer3Enabled = false)
-                        } else {
-                            s
-                        }
-                    if (runDetection(pkg, effective, inCoreWindow = elapsed <= SPLASH_WINDOW_MS)) taps++
-                    delay(SPLASH_POLL_INTERVAL_MS)
+                wakeLock.acquire(8_000L)
+                if (settings.debugOverlay) overlay.update("正在识别开屏")
+                val attempted = pollForSkipButton(
+                    updates,
+                    isCurrent = { sessions.isCurrent(session, SystemClock.elapsedRealtime()) },
+                    detect = { detectAndClick(session) },
+                )
+                if (!attempted && isActive && settings.debugOverlay &&
+                    SystemClock.elapsedRealtime() - session.startedAt >= 8_000L) {
+                    val inference = VlmEngine.inferenceStatus.value
+                    overlay.update(if (inference.count > initialVlmCount) {
+                        "大模型：${inference.message}" +
+                            if (inference.elapsedMs > 0) "（${inference.elapsedMs} ms）" else ""
+                    } else lastMissReason)
                 }
             } finally {
-                // Persist the session outcome once (poller may restart within
-                // the same session; count it a single time).
-                val startStamp = sessionStartAt[pkg]
-                if (pkg != packageName && ticks > 0 && startStamp != null &&
-                    recordedSessions.put(pkg, startStamp) != startStamp
-                ) {
-                    val adSeen = taps > 0 || adEvidence.isAdConfirmed(pkg)
-                    scope.launch {
-                        try {
-                            profileRepo.recordSession(pkg, adSeen, appVersionCode(pkg))
-                        } catch (t: Throwable) {
-                            Timber.w(t, "profile write failed")
-                        }
+                sessions.finish(session)
+                updates.close()
+                if (wakeLock.isHeld) wakeLock.release()
+                if (pollingId == session.id) {
+                    clearDemonstration()
+                    pollingId = null
+                    pollUpdates = null
+                }
+                if (pollingId == null) clearVisualFallback()
+            }
+        }
+    }
+
+    private fun stopSession() {
+        clearVisualFallback()
+        sessions.invalidate()
+        pollJob?.cancel()
+        pollJob = null
+        pollUpdates = null
+        pollingId = null
+        feedbackJob?.cancel()
+        feedbackJob = null
+        autoLearningJob?.cancel()
+        autoLearningJob = null
+        demonstrationJob?.cancel()
+        demonstrationJob = null
+        clearDemonstration()
+    }
+
+    private fun clearDemonstration() {
+        demonstrationOverlay?.hide()
+        demonstrationFrame?.recycle()
+        demonstrationFrame = null
+    }
+
+    private fun clearVisualFallback() {
+        VlmEngine.cancelInference()
+        if (::visualFallback.isInitialized) visualFallback.clear()
+    }
+
+    private fun appAllowed(pkg: String): Boolean = pkg !in excludedPackages &&
+        if (pkg == packageName) settings.selfTest && selfTestVisible else pkg in settings.enabledPackages
+
+    private fun validRoot(session: SplashSessionTracker.Session, windowId: Int? = null): AccessibilityNodeInfo? {
+        if (!settings.masterEnabled || !sessions.isCurrent(session, SystemClock.elapsedRealtime())) return null
+        if (!appAllowed(session.packageName)) return null
+        if (!getSystemService(PowerManager::class.java).isInteractive) return null
+        return rootInActiveWindow?.takeIf {
+            if (windowId == null) it.packageName?.toString() == session.packageName
+            else SkipSafety.sameWindow(session.packageName, windowId, it.packageName?.toString(), it.windowId)
+        }
+    }
+
+    private suspend fun detectAndClick(session: SplashSessionTracker.Session): Boolean {
+        if (LearningController.collecting(session.packageName)) return false
+        val root = validRoot(session) ?: return false
+        val windowId = root.windowId
+        val revision = settingsRevision
+        val snapshot = settings
+        val demonstrating = session.packageName in snapshot.demonstrationPackages
+        val rules = learnedRules.rules.value.filter { it.packageName == session.packageName }
+        val appVersion = runCatching {
+            packageManager.getPackageInfo(session.packageName, 0).longVersionCode
+        }.getOrDefault(-1)
+        val display = getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
+        val pipeline = DetectionPipeline.create(if (snapshot.layer3Enabled) yolo else null, null, selfLabels)
+        val frames = ArrayList<Bitmap>()
+        var ocrLines: List<OcrLine>? = null
+        val started = SystemClock.elapsedRealtime()
+        suspend fun pass(node: AccessibilityNodeInfo): SkipTarget? {
+            val remaining = sessions.remainingMs(session, SystemClock.elapsedRealtime())
+            if (remaining <= 0) return null
+            LearnedMatcher.findNode(rules, node, session.packageName, appVersion, display.width(), display.height())?.let { (rule, box) ->
+                return SkipTarget(box.exactCenterX(), box.exactCenterY(), SkipLayer.L0_LEARNED, rule.id)
+            }
+            val evidence = NodeMatcher.hasAdEvidence(node)
+            if (!demonstrating && snapshot.layer1Enabled && evidence) {
+                NodeMatcher.findSkipNode(node, snapshot.keywords, selfLabels)?.let { box ->
+                    return SkipTarget(box.exactCenterX(), box.exactCenterY(), SkipLayer.L1_NODE)
+                }
+            }
+            var image: Bitmap? = null
+            suspend fun capture(): Bitmap? {
+                if (image == null) image = ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add)
+                return image
+            }
+            if (rules.any { it.version == appVersion }) {
+                capture()?.let { bitmap ->
+                    LearnedMatcher.findVisual(rules, bitmap, session.packageName, appVersion)?.let { rule ->
+                        return SkipTarget(rule.box.exactCenterX(), rule.box.exactCenterY(), SkipLayer.L0_LEARNED, rule.id)
                     }
                 }
             }
-        }
-        if (pollJobs.putIfAbsent(pkg, job) == null) {
-            Timber.d("splash poller start for %s", pkg)
-            holdSplashWakeLock()
-            // The pulse chain normally runs whenever the screen is on, but the
-            // watchdog may not have caught up yet after a thaw — an event just
-            // arrived, so the process is provably running: re-arm here.
-            startThawPulse()
-            job.invokeOnCompletion { cause ->
-                Timber.d("splash poller exit for %s (%s)", pkg, cause?.javaClass?.simpleName ?: "done")
-                pollJobs.remove(pkg, job)
-                if (pollJobs.isEmpty()) releaseSplashWakeLock()
+            if (demonstrating) {
+                capture()?.let { image ->
+                    frames.remove(image)
+                    demonstrationFrame?.recycle()
+                    demonstrationFrame = image
+                    demonstrationFrameAt = SystemClock.elapsedRealtime()
+                    demonstrationWindowId = node.windowId
+                }
+                return null
             }
-            job.start()
-        } else {
-            job.cancel()
-        }
-    }
-
-    /** HyperOS GreezeManager cgroup-freezes this process ~1s after the last
-     *  accessibility event (observed: cgroup.freeze=1; held wake locks are
-     *  force-disabled by the freezer) and never thaws it for event delivery.
-     *  The thaw pulse keeps a minimal self-sustaining event stream alive:
-     *  each pulse makes an invisible 1px overlay view emit a content-changed
-     *  event, whose round-trip through system_server resets the freezer's
-     *  inactivity timer, during which the next pulse is posted. The pulse
-     *  interval must stay well below the freezer's ~1s grace period. Runs
-     *  whenever the screen is interactive; pending postDelayed messages
-     *  survive a freeze, so the chain self-resumes after any thaw. */
-    private fun startThawPulse() {
-        if (pulseActive) return
-        Timber.d("thaw pulse start")
-        pulseActive = true
-        ensurePulseView()
-        pulseHandler.post(pulseRunnable)
-    }
-
-    private fun ensurePulseView() {
-        if (pulseView != null) return
-        try {
-            val v = View(this)
-            v.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-            val lp = WindowManager.LayoutParams(
-                1, 1,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-                PixelFormat.TRANSLUCENT,
-            )
-            lp.gravity = Gravity.TOP or Gravity.START
-            lp.alpha = 0f
-            getSystemService(WindowManager::class.java).addView(v, lp)
-            pulseView = v
-        } catch (t: Throwable) {
-            // A stale binding (post-crash rebind on HyperOS) rejects the
-            // overlay token with BadTokenException; retried by pulseRunnable.
-            Timber.w(t, "thaw pulse view failed")
-        }
-    }
-
-    /** Stops the pulse chain but keeps the overlay view attached — it is
-     *  invisible and free while idle, and re-adding a window on every screen
-     *  cycle would be churn. Removed only in [onDestroy]. */
-    private fun stopThawPulse() {
-        if (pulseActive) Timber.d("thaw pulse stop")
-        pulseActive = false
-        pulseHandler.removeCallbacks(pulseRunnable)
-    }
-
-    private fun removePulseView() {
-        pulseView?.let {
-            try {
-                getSystemService(WindowManager::class.java).removeView(it)
-            } catch (t: Throwable) {
-                Timber.w(t, "thaw pulse view removal failed")
+            val result = withTimeoutOrNull(remaining) {
+                withContext(Dispatchers.Default) {
+                    pipeline.detect(
+                        node,
+                        { capture() },
+                        snapshot.copy(vlmEnabled = false),
+                        nodeAdEvidence = evidence,
+                        timeBudgetMs = remaining,
+                    )
+                }
             }
-        }
-        pulseView = null
-    }
-
-    /** HyperOS GreezeManager cgroup-freezes this process ~0.5s after the
-     *  last accessibility event; a silent video splash ad (Douban) emits
-     *  none, so without a wake lock the poll loop stops getting CPU right
-     *  when the ad appears (observed: cgroup.freeze=1 for the whole window).
-     *  A partial wake lock is held for the splash window only — it is
-     *  acquired here, i.e. during an event delivery, while the process is
-     *  guaranteed to be running. */
-    private fun holdSplashWakeLock() {
-        try {
-            if (splashWakeLock?.isHeld == true) return
-            val pm = getSystemService(PowerManager::class.java)
-            splashWakeLock = pm.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "adskipper:splash",
-            ).apply { acquire(SPLASH_WINDOW_EXTENDED_MS + 10_000L) } // auto-release backstop
-        } catch (t: Throwable) {
-            Timber.w(t, "wake lock acquire failed")
-        }
-    }
-
-    private fun releaseSplashWakeLock() {
-        try {
-            splashWakeLock?.takeIf { it.isHeld }?.release()
-        } catch (t: Throwable) {
-            Timber.w(t, "wake lock release failed")
-        }
-        splashWakeLock = null
-    }
-
-    /** One pipeline pass; returns true when a target was found and tapped.
-     *  Image L3 always requires positive ad evidence ([AdEvidenceTracker]) —
-     *  apps without splash ads never produce it, so their launches never see
-     *  an image-layer tap. Outside the core splash window the screen must
-     *  additionally still look like a splash (tiny node tree). The tree check
-     *  must NOT apply inside the core window: Douban preloads its feed
-     *  beneath the splash ad, so the ad screen itself is 30+ nodes — a
-     *  universal tree gate kept L3 off for the entire ad (regression found
-     *  on-device 2026-08-09). */
-    private suspend fun runDetection(
-        pkg: String,
-        s: AppSettings,
-        inCoreWindow: Boolean = false,
-    ): Boolean {
-        // Never detect or tap unless [pkg] owns the active window: transient
-        // overlay windows (HyperOS permissioncontroller pops up during cold
-        // starts) must neither be tapped themselves nor cause their
-        // full-screen screenshot to be tapped at the ad's coordinates.
-        val root = rootInActiveWindow
-        if (root?.packageName?.toString() != pkg) {
-            Timber.d(
-                "active window is %s, not %s, skip tick",
-                root?.packageName ?: "<null root>", pkg,
-            )
-            return false
-        }
-        // Ad-SDK fingerprints in the tree are evidence too (cheap: splash
-        // trees are tiny and the walk is capped).
-        if (pkg != packageName && !adEvidence.isAdConfirmed(pkg) &&
-            NodeMatcher.hasAdSdkMarker(root, SDK_SCAN_NODE_CAP)
-        ) {
-            Timber.d("ad SDK marker in %s tree", pkg)
-            adEvidence.noteSdkSignal(pkg)
-        }
-        var effective = s
-        if (s.layer3Enabled && !inCoreWindow) {
-            val treeSize = NodeMatcher.treeSize(root, SPLASH_TREE_MAX_NODES + 1)
-            if (treeSize > SPLASH_TREE_MAX_NODES) {
-                effective = s.copy(layer3Enabled = false)
-                Timber.d("tree size %d+ — L3 off for this tick", treeSize)
+            ocrLines = result?.ocrLines
+            if (sessions.isCurrent(session, SystemClock.elapsedRealtime()) && result?.target == null) {
+                lastMissReason = result?.missReason ?: "画面识别超时"
             }
+            return result?.target
         }
-        val selfTesting = s.selfTest && pkg == packageName
-        if (!processing.compareAndSet(false, true)) {
-            Timber.d("detection already running, skip %s", pkg)
-            return false
-        }
-        lastAttemptAt[pkg] = android.os.SystemClock.elapsedRealtime()
-        Timber.d("detecting in %s", pkg)
-        val t0 = android.os.SystemClock.elapsedRealtime()
-        try {
-            val model = ModelCatalog.byId(effective.activeModelId) ?: ModelCatalog.default
-            val pipeline = DetectionPipeline.create(engine, effective, model, yolo, selfLabels)
-            val result = pipeline.detect(
-                root = root,
-                screenshot = {
-                    ScreenshotCapturer.capture(this)?.also { bmp ->
-                        if (effective.debugOverlay) dumpDebugFrame(bmp)
+        return try {
+            val key = VisualFallback.Key(session.id, windowId, revision)
+            val proposal = visualFallback.take(key)
+            proposal?.image?.let(frames::add)
+            // A ready model proposal goes straight to fresh-frame verification.
+            val fast = if (proposal == null) pass(root) else null
+            val first = fast ?: proposal?.target ?: run {
+                if (demonstrating && SystemClock.elapsedRealtime() - session.startedAt >= 400L &&
+                    revision == settingsRevision && validRoot(session) != null) {
+                    showDemonstration(session, revision)
+                }
+                if (snapshot.vlmEnabled && VlmEngine.isReady && validRoot(session, windowId) != null) {
+                    val image = frames.lastOrNull() ?: ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add)
+                    if (image == null) lastMissReason = "截图失败，暂未启动大模型"
+                    if (image != null && visualFallback.submit(key, image,
+                            minOf(4_000L, sessions.remainingMs(session, SystemClock.elapsedRealtime())))) {
+                        frames.remove(image)
+                        if (settings.debugOverlay) overlay.update("已提交大模型识别")
                     }
-                },
-                settings = effective,
-                imageLayerGate = { lines ->
-                    // Feed this tick's OCR into the evidence tracker first, so
-                    // a badge/countdown visible right now unlocks L3 in the
-                    // same tick.
-                    adEvidence.observeOcr(pkg, lines)
-                    val open = selfTesting || adEvidence.isAdConfirmed(pkg)
-                    if (!open) Timber.d("no ad evidence in %s — image L3 gated", pkg)
-                    open
-                },
-            )
-            val target = result.target ?: run {
-                Timber.d("no target in %s, timings=%s", pkg, result.timings)
+                }
                 return false
             }
-            Timber.i(
-                "skip hit in %s via %s at (%.0f, %.0f), timings=%s",
-                pkg, target.layer, target.x, target.y, result.timings,
-            )
-            if (!performClick(target.x, target.y)) return false
-            val elapsed = android.os.SystemClock.elapsedRealtime() - t0
-            statsRepo.record(pkg, target.layer.name, elapsed)
-            if (s.debugOverlay) {
-                overlay.update("${target.layer}  (${target.x.toInt()}, ${target.y.toInt()})  ${elapsed}ms")
+            demonstrationOverlay?.hide()
+            val sampledAt = SystemClock.elapsedRealtime()
+            currentCoroutineContext().ensureActive()
+            if (revision != settingsRevision || validRoot(session, windowId) == null) return false
+            if (first.requiresCountdownProof && settings.debugOverlay) overlay.update("正在确认跳过倒计时")
+            delay(if (first.requiresCountdownProof) 1_050 else 120)
+            val freshRoot = validRoot(session, windowId) ?: return false
+            if (!freshRoot.refresh()) return false
+            val verified = if (first.layer == SkipLayer.L3_VLM) {
+                val source = frames.lastOrNull() ?: return false
+                val fresh = ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add) ?: return false
+                if (!FrameVerifier.matches(source, fresh, first)) {
+                    lastMissReason = "画面已变化，已放弃旧按钮坐标"
+                    return false
+                }
+                first
+            } else pass(freshRoot) ?: return false
+            currentCoroutineContext().ensureActive()
+            val liveRoot = validRoot(session, windowId) ?: return false
+            if (!SkipSafety.canConfirmTarget(first, verified, SystemClock.elapsedRealtime() - sampledAt)) {
+                lastMissReason = "按钮或倒计时未通过复查"
+                return false
             }
-            return true
-        } catch (t: Throwable) {
-            Timber.w(t, "detection failed for %s", pkg)
-            return false
+            if (revision != settingsRevision) return false
+            if (LearningController.collecting(session.packageName)) return false
+            if (verified.layer == SkipLayer.L0_LEARNED &&
+                (first.detail != verified.detail || learnedRules.rules.value.none { it.id == verified.detail })) return false
+
+            // Reuse OCR frames; a first node-only lesson may capture for at most 300 ms.
+            val learningImage = if (snapshot.layer2Enabled &&
+                (verified.layer == SkipLayer.L1_NODE || verified.layer == SkipLayer.L2_OCR)) {
+                frames.lastOrNull() ?: withTimeoutOrNull(minOf(300L,
+                    sessions.remainingMs(session, SystemClock.elapsedRealtime()))) {
+                    ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add)
+                }
+            } else null
+            val learningNodes = if (learningImage != null) LearnedMatcher.nodes(liveRoot) else emptyList()
+            val nodeAdEvidence = NodeMatcher.hasAdEvidence(liveRoot)
+
+            val node = if (verified.layer == SkipLayer.L1_NODE) {
+                NodeMatcher.findSkipNodeInfo(liveRoot, snapshot.keywords, selfLabels)?.takeIf {
+                    if (!it.refresh() || !it.isEnabled || !it.isVisibleToUser ||
+                        !SkipSafety.sameWindow(session.packageName, windowId, it.packageName?.toString(), it.windowId)) {
+                        false
+                    } else {
+                        val box = Rect().also(it::getBoundsInScreen)
+                        SkipSafety.sameTarget(verified, verified.copy(x = box.exactCenterX(), y = box.exactCenterY()))
+                    }
+                } ?: return false
+            } else null
+            if (revision != settingsRevision || validRoot(session, windowId) == null) return false
+
+            // Consume before dispatch; fall back only when the node action was rejected.
+            sessions.finish(session)
+            clearVisualFallback()
+            val viaNode = node?.isClickable == true && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            val completed = viaNode || run {
+                currentCoroutineContext().ensureActive()
+                val current = rootInActiveWindow
+                if (revision != settingsRevision || !settings.masterEnabled ||
+                    SystemClock.elapsedRealtime() - session.startedAt >= 8_000L ||
+                    !getSystemService(PowerManager::class.java).isInteractive || current == null ||
+                    !SkipSafety.sameWindow(session.packageName, windowId, current.packageName?.toString(), current.windowId)) {
+                    return true
+                }
+                performClick(verified.x, verified.y)
+            }
+            if (completed) {
+                showClickFeedback(session, windowId, revision, verified, viaNode)
+                stats.record(session.packageName, verified.layer.name, SystemClock.elapsedRealtime() - started)
+                learningImage?.let { image ->
+                    frames.remove(image)
+                    learnAfterClick(session, revision, verified, image, ocrLines, learningNodes, appVersion, nodeAdEvidence)
+                }
+            } else if (settings.debugOverlay) {
+                overlay.update("点击未执行：${verified.layer}")
+            }
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
         } finally {
-            processing.set(false)
+            frames.forEach { if (!it.isRecycled) it.recycle() }
         }
     }
 
-    /** Debug aid (debugOverlay on): persist the frames the pipeline actually
-     *  sees during splash windows, so detector misses can be distinguished
-     *  from stale takeScreenshot frames. Pull via run-as from filesDir/shots. */
-    private fun dumpDebugFrame(bmp: android.graphics.Bitmap) {
-        scope.launch(Dispatchers.IO) {
+    private fun showDemonstration(session: SplashSessionTracker.Session, revision: Long) {
+        val frame = demonstrationFrame
+        if (frame == null || SystemClock.elapsedRealtime() - demonstrationFrameAt > 800L ||
+            !LearnedMatcher.canLearnPage(frame)) {
+            demonstrationOverlay?.hide()
+            DemonstrationLearning.report(session.packageName, "示范需要可读截图，本轮等待截图")
+            return
+        }
+        val shown = demonstrationOverlay?.show(
+            onTouch = { touch -> recordDemonstration(session, revision, touch) },
+            onCancel = {
+                sessions.finish(session)
+                clearDemonstration()
+                DemonstrationLearning.report(session.packageName, "本轮示范已取消，下次启动继续等待")
+            },
+        ) == true
+        if (shown) {
+            DemonstrationLearning.report(session.packageName, "等待你点跳过；本次没有广告请点提示取消")
+        } else {
+            sessions.finish(session)
+            DemonstrationLearning.report(session.packageName, "示范浮窗未能打开，请检查无障碍服务")
+        }
+    }
+
+    private fun recordDemonstration(session: SplashSessionTracker.Session, revision: Long, touch: DemonstrationTouch) {
+        if (!sessions.isCurrent(session, SystemClock.elapsedRealtime()) || revision != settingsRevision) return
+        val source = demonstrationFrame
+        val sourceAt = demonstrationFrameAt
+        val sourceWindow = demonstrationWindowId
+        demonstrationFrame = null
+        sessions.finish(session)
+        pollJob?.cancel()
+        autoLearningJob?.cancel()
+        demonstrationOverlay?.hide()
+        overlay.dismiss()
+        val pkg = session.packageName
+        val started = SystemClock.elapsedRealtime()
+        fun currentRoot(windowId: Int? = null): AccessibilityNodeInfo? {
+            if (revision != settingsRevision || !settings.masterEnabled || !appAllowed(pkg) ||
+                pkg !in settings.demonstrationPackages || LearningController.collecting(pkg) ||
+                SystemClock.elapsedRealtime() - started > 3_000L ||
+                !getSystemService(PowerManager::class.java).isInteractive) return null
+            return rootInActiveWindow?.takeIf { root -> root.refresh() && root.packageName?.toString() == pkg &&
+                (windowId == null || root.windowId == windowId) }
+        }
+        fun report(message: String) {
+            DemonstrationLearning.report(pkg, message)
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        }
+        demonstrationJob?.cancel()
+        demonstrationJob = scope.launch {
+            var before: Bitmap? = null
+            var after: Bitmap? = null
             try {
-                val dir = java.io.File(filesDir, "shots").apply { mkdirs() }
-                val old = dir.listFiles()?.sortedBy { it.name }.orEmpty()
-                old.dropLast(KEEP_DEBUG_FRAMES - 1).forEach { it.delete() }
-                java.io.File(dir, "${System.currentTimeMillis()}.png")
-                    .outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, it) }
-            } catch (t: Throwable) {
-                Timber.w(t, "debug frame dump failed")
+                delay(80) // Remove the touch layer and its prompt before sampling the underlying ad.
+                val root = currentRoot() ?: return@launch
+                val windowId = root.windowId
+                val version = packageManager.getPackageInfo(pkg, 0).longVersionCode
+                val nodes = if (touch.tap) LearnedMatcher.nodes(root) else emptyList()
+                if (touch.tap) before = withTimeoutOrNull(600L) { ScreenshotCapturer.capture(this@AdSkipperService) }
+                if (currentRoot(windowId) == null || SystemClock.elapsedRealtime() - started > 900L) {
+                    report("页面已变化，本次示范已取消")
+                    return@launch
+                }
+                if (touch.tap) {
+                    val fresh = before
+                    if (fresh == null) { report("截图失败，请直接再点跳过；本轮未学习"); return@launch }
+                    if (source == null || sourceWindow != windowId || started - sourceAt !in 0L..800L ||
+                        !FrameVerifier.matches(source, fresh, SkipTarget(touch.x, touch.y, SkipLayer.L0_LEARNED))) {
+                        report("按钮画面已变化，请直接再点跳过；本轮未学习")
+                        return@launch
+                    }
+                }
+                val completed = if (touch.tap) performClick(touch.x, touch.y)
+                    else performGesture(touch.path, touch.durationMs)
+                val clickedAt = SystemClock.elapsedRealtime()
+                if (!completed) { report("触摸未完成，请重新操作"); return@launch }
+                if (!touch.tap) { report("已转发手势，本轮未学习；下次启动继续等待"); return@launch }
+                val image = before ?: run { report("已转发点击，截图失败未保存规则"); return@launch }
+                val rule = withContext(Dispatchers.Default) {
+                    DemonstrationLearning.propose(pkg, version, image, touch.x, touch.y, nodes)
+                } ?: run { report("已转发点击，按钮特征不足，可用截图框选补充"); return@launch }
+                delay(450)
+                val afterRoot = currentRoot() ?: return@launch
+                after = ScreenshotCapturer.capture(this@AdSkipperService) ?: run {
+                    report("点击后截图失败，未保存规则"); return@launch
+                }
+                val confirmed = withContext(Dispatchers.Default) {
+                    DemonstrationLearning.confirmsExit(rule, after!!, SystemClock.elapsedRealtime() - clickedAt)
+                }
+                if (currentRoot(afterRoot.windowId) == null) return@launch
+                if (!confirmed) { report("点击后未确认页面离开，未保存规则"); return@launch }
+                learnedRules.save(rule)
+                report("已学习跳过位置，下次优先匹配；新位置仍可继续示范")
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                report("本轮示范未保存，请重试")
+            } finally {
+                source?.recycle()
+                before?.recycle()
+                after?.recycle()
             }
         }
     }
 
-    private fun appVersionCode(pkg: String): Long = try {
-        packageManager.getPackageInfo(pkg, 0).longVersionCode
-    } catch (t: Throwable) {
-        -1L
-    }
-
-    private fun performClick(x: Float, y: Float): Boolean {
-        val path = Path().apply { moveTo(x, y) }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, TAP_DURATION_MS))
-            .build()
-        // The system can cancel a dispatched gesture (touch collisions,
-        // window transitions) and the ad plays on as if never tapped — log
-        // the outcome so those runs are diagnosable from logcat.
-        val callback = object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(g: GestureDescription?) {
-                Timber.d("tap completed at (%.0f, %.0f)", x, y)
-            }
-
-            override fun onCancelled(g: GestureDescription?) {
-                Timber.w("tap CANCELLED at (%.0f, %.0f)", x, y)
+    private fun learnAfterClick(session: SplashSessionTracker.Session, revision: Long, target: SkipTarget,
+                                image: Bitmap, lines: List<OcrLine>?, nodes: List<LearnedNode>,
+                                version: Long, nodeAdEvidence: Boolean) {
+        val clickedAt = SystemClock.elapsedRealtime()
+        fun allowed(): Boolean = revision == settingsRevision && settings.masterEnabled &&
+            appAllowed(session.packageName) && !LearningController.collecting(session.packageName) &&
+            getSystemService(PowerManager::class.java).isInteractive &&
+            SystemClock.elapsedRealtime() - session.startedAt < 8_000L &&
+            rootInActiveWindow?.packageName?.toString() == session.packageName
+        autoLearningJob?.cancel()
+        autoLearningJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            var afterImage: Bitmap? = null
+            try {
+                withTimeoutOrNull(2_500L) {
+                    val ocr = OcrDetector()
+                    // ML Kit has no task cancellation; retain its bitmap until recognition finishes.
+                    suspend fun recognize(bitmap: Bitmap) = withContext(NonCancellable + Dispatchers.Default) {
+                        ocr.recognize(bitmap)
+                    }
+                    val rule = withContext(Dispatchers.Default) {
+                        AutomaticLearning.propose(session.packageName, version, image, target,
+                            lines?.takeIf { it.isNotEmpty() } ?: recognize(image), nodes, nodeAdEvidence)
+                    } ?: return@withTimeoutOrNull
+                    image.recycle()
+                    delay(700)
+                    if (!allowed()) return@withTimeoutOrNull
+                    val afterRoot = rootInActiveWindow ?: return@withTimeoutOrNull
+                    if (!afterRoot.refresh() || NodeMatcher.hasAdEvidence(afterRoot)) return@withTimeoutOrNull
+                    val after = ScreenshotCapturer.capture(this@AdSkipperService) ?: return@withTimeoutOrNull
+                    afterImage = after
+                    val elapsed = SystemClock.elapsedRealtime() - clickedAt
+                    val afterLines = recognize(after)
+                    val confirmed = withContext(Dispatchers.Default) {
+                        AutomaticLearning.confirmsExit(rule, after, afterLines, false, elapsed)
+                    }
+                    if (!confirmed || !allowed()) return@withTimeoutOrNull
+                    val current = rootInActiveWindow ?: return@withTimeoutOrNull
+                    if (!current.refresh() || !SkipSafety.sameWindow(session.packageName, afterRoot.windowId,
+                            current.packageName?.toString(), current.windowId) || NodeMatcher.hasAdEvidence(current) ||
+                        NodeMatcher.findSkipNode(current, settings.keywords, selfLabels) != null) return@withTimeoutOrNull
+                    // Keep the final settings/foreground check and atomic write on the same dispatcher.
+                    learnedRules.save(rule)
+                    if (settings.debugOverlay) overlay.update("已自动学习跳过按钮，下次优先匹配")
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (allowed() && settings.debugOverlay) overlay.update("本次规则未保存，可在应用页手动学习")
+            } finally {
+                if (!image.isRecycled) image.recycle()
+                afterImage?.let { if (!it.isRecycled) it.recycle() }
             }
         }
-        return dispatchGesture(gesture, callback, pulseHandler)
+    }
+
+    private fun showClickFeedback(session: SplashSessionTracker.Session, windowId: Int, revision: Long,
+                                 target: SkipTarget, viaNode: Boolean) {
+        if (!settings.debugOverlay) return
+        overlay.update("已发送${if (viaNode) "控件" else "触摸"}点击：${target.layer}")
+        if (target.layer != SkipLayer.L1_NODE) return
+        feedbackJob?.cancel()
+        feedbackJob = scope.launch {
+            delay(700)
+            if (revision != settingsRevision || !settings.debugOverlay ||
+                !getSystemService(PowerManager::class.java).isInteractive) return@launch
+            val message = try {
+                val after = rootInActiveWindow
+                if (after == null || !after.refresh()) {
+                    "点击已发送，页面状态待确认"
+                } else if (!SkipSafety.sameWindow(session.packageName, windowId, after.packageName?.toString(), after.windowId)) {
+                    "点击后页面已切换"
+                } else if (NodeMatcher.findSkipNode(after, settings.keywords, selfLabels) != null) {
+                    "按钮仍在，未确认跳过"
+                } else {
+                    "未再识别到跳过按钮"
+                }
+            } catch (_: Exception) {
+                "点击已发送，页面状态待确认"
+            }
+            overlay.update(message)
+        }
+    }
+
+    private suspend fun performClick(x: Float, y: Float): Boolean = performGesture(
+        Path().apply { moveTo(x, y) }, ViewConfiguration.getTapTimeout().toLong())
+
+    private suspend fun performGesture(path: Path, durationMs: Long): Boolean = withTimeoutOrNull(durationMs + 1_000L) {
+        suspendCancellableCoroutine { continuation ->
+            val gesture = GestureDescription.Builder().addStroke(
+                GestureDescription.StrokeDescription(path, 0, durationMs),
+            ).build()
+            val callback = object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    if (continuation.isActive) continuation.resume(true)
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    if (continuation.isActive) continuation.resume(false)
+                }
+            }
+            if (!dispatchGesture(gesture, callback, null) && continuation.isActive) continuation.resume(false)
+        }
+    } ?: false
+
+    private fun startNotification() {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(NotificationChannel("keepalive", "运行状态", NotificationManager.IMPORTANCE_MIN))
+        val notification = Notification.Builder(this, "keepalive")
+            .setSmallIcon(android.R.drawable.ic_menu_view).setContentTitle("开屏跳过运行中").setOngoing(true).build()
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(1, notification)
+        }
+    }
+
+    private fun updateLearningOverlay() {
+        val learning = LearningController.state.value
+        val pkg = rootInActiveWindow?.packageName?.toString()
+        if (learning.phase == LearningController.Phase.ARMED && pkg != null && pkg == learning.packageName &&
+            settings.masterEnabled && appAllowed(pkg) &&
+            getSystemService(PowerManager::class.java).isInteractive) {
+            learningOverlay?.show { captureLearning(pkg) }
+        } else learningOverlay?.hide()
+    }
+
+    private fun captureLearning(pkg: String) {
+        val id = LearningController.capturing() ?: return
+        stopSession()
+        overlay.dismiss()
+        learningCaptureJob = scope.launch {
+            var image: Bitmap? = null
+            try {
+                delay(150) // Let the capture button disappear before taking the screenshot.
+                val root = rootInActiveWindow ?: error("无法读取前台应用")
+                check(settings.masterEnabled && appAllowed(pkg) && root.packageName?.toString() == pkg &&
+                    getSystemService(PowerManager::class.java).isInteractive) { "前台已变化，请重新采集" }
+                val window = root.windowId
+                val nodes = LearnedMatcher.nodes(root)
+                val version = packageManager.getPackageInfo(pkg, 0).longVersionCode
+                image = ScreenshotCapturer.capture(this@AdSkipperService) ?: error("截图失败，请重新采集")
+                val after = rootInActiveWindow
+                check(settings.masterEnabled && appAllowed(pkg) && after != null &&
+                    SkipSafety.sameWindow(pkg, window, after.packageName?.toString(), after.windowId) &&
+                    getSystemService(PowerManager::class.java).isInteractive) { "采集时页面已切换，请重试" }
+                val afterNodes = LearnedMatcher.nodes(after)
+                val stableNodes = if (LearnedMatcher.layout(nodes) == LearnedMatcher.layout(afterNodes)) afterNodes else emptyList()
+                LearningController.captured(this@AdSkipperService, id, image!!, stableNodes, version)
+            } catch (cancelled: CancellationException) {
+                if (LearningController.state.value.id == id) LearningController.fail("采集已取消，请重试")
+                throw cancelled
+            } catch (error: Exception) {
+                if (LearningController.state.value.id == id) LearningController.fail(error.message ?: "采集失败")
+            } finally { image?.recycle() }
+        }
     }
 
     override fun onInterrupt() {
-        Timber.i("AdSkipperService interrupted")
+        stopSession()
+        learningOverlay?.hide()
+        learningCaptureJob?.cancel()
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        mutableConnected.value = false
+        learningOverlay?.hide()
+        learningCaptureJob?.cancel()
+        stopSession()
+        return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
-        overlay.dismiss()
-        releaseSplashWakeLock()
-        stopThawPulse()
-        removePulseView()
-        try {
-            unregisterReceiver(screenReceiver)
-        } catch (t: Throwable) {
-            Timber.w(t, "screen receiver unregister failed")
-        }
-        try {
-            getSystemService(AlarmManager::class.java).cancel(watchdogListener)
-        } catch (t: Throwable) {
-            Timber.w(t, "watchdog cancel failed")
-        }
-        scope.launch { engine.release() }
+        mutableConnected.value = false
+        learningOverlay?.hide()
+        learningCaptureJob?.cancel()
+        stopSession()
+        if (::overlay.isInitialized) overlay.dismiss()
+        runCatching { unregisterReceiver(screenReceiver) }
+        yolo?.close()
         scope.cancel()
+        CoroutineScope(Dispatchers.IO).launch { VlmEngine.release() }
         super.onDestroy()
-    }
-
-    companion object {
-        private const val ATTEMPT_COOLDOWN_MS = 2000L
-
-        /** L3 image detectors run unconditionally this long after an app
-         *  session starts. */
-        private const val SPLASH_WINDOW_MS = 8000L
-
-        /** Default cap on splash polling. Sized for slow-launching apps whose
-         *  ad appears late and plays long (hupu: white splash ~8s, then a
-         *  ~40s silent ad). A confirmed countdown may stretch polling past
-         *  this, up to [SPLASH_WINDOW_HARD_CAP_MS]. */
-        private const val SPLASH_WINDOW_EXTENDED_MS = 45_000L
-
-        /** Absolute ceiling on splash polling, countdown or not. */
-        private const val SPLASH_WINDOW_HARD_CAP_MS = 90_000L
-
-        /** Node budget for the per-tick ad-SDK fingerprint walk. */
-        private const val SDK_SCAN_NODE_CAP = 60
-
-        /** After this many consecutive ad-free splash sessions an app runs
-         *  in L1-only mode (no screenshots/OCR/image L3). */
-        private const val BARREN_SESSIONS_TO_DOWNGRADE = 15
-
-        /** Every Nth ad-free session of a downgraded app probes at full
-         *  strength, so an app that starts showing ads is re-detected. */
-        private const val PROBE_EVERY_SESSIONS = 5
-
-        /** A screen whose node tree exceeds this is real app UI, not a
-         *  splash ad (splash screens are a handful of ad-SDK views; feeds
-         *  are hundreds of nodes). */
-        private const val SPLASH_TREE_MAX_NODES = 30
-
-        /** Gap without events after which the next event starts a new session. */
-        private const val SESSION_GAP_MS = 20_000L
-        private const val TAP_DURATION_MS = 50L
-
-        /** Self-thaw pulse cadence; must stay below the ~1s freeze grace
-         *  period observed for HyperOS GreezeManager. */
-        private const val THAW_PULSE_INTERVAL_MS = 300L
-
-        /** Watchdog alarm cadence. Bounds how long the service can stay
-         *  frozen (and thus miss app launches) after waking from a
-         *  screen-off period. Non-wakeup alarm, so no sleep-battery cost. */
-        private const val WATCHDOG_INTERVAL_MS = 60_000L
-
-        /** Delay before warming up the YOLO native engine after connect;
-         *  see onServiceConnected. */
-        private const val YOLO_WARMUP_DELAY_MS = 8000L
-
-        /** How many pipeline frames to keep for debugOverlay frame dumps. */
-        private const val KEEP_DEBUG_FRAMES = 12
-
-        /** Skipped before the first splash poll: launch transitions briefly
-         *  show a snapshot of the app's previous session, and both OCR and the
-         *  node tree see that stale frame. */
-        private const val SPLASH_POLL_INITIAL_DELAY_MS = 500L
-        private const val SPLASH_POLL_INTERVAL_MS = 750L
-
-        /** Taps per splash session are capped so a phantom target (matched but
-         *  not dismissible) is never tapped indefinitely. */
-        private const val SPLASH_MAX_TAPS = 3
-
-        private const val KEEPALIVE_CHANNEL_ID = "keepalive"
-        private const val KEEPALIVE_NOTIFICATION_ID = 1
-
-        /** Home-screen companion surfaces that are separate packages from the
-         *  launcher (search overlay, minus-one screen). They list installed
-         *  apps, never show splash ads, and must not be tapped. */
-        private val HOME_SURFACE_PACKAGES = setOf(
-            "com.android.quicksearchbox",             // MIUI/AOSP home search
-            "com.google.android.googlequicksearchbox", // Google app / Pixel search
-            "com.miui.personalassistant",             // MIUI minus-one screen
-        )
-
-        /** Common browsers, backstopping [resolveBrowserPackages] for OEM
-         *  builds where the intent query misses (role-gated resolution,
-         *  package-visibility filtering). Never detect or tap in these. */
-        private val BROWSER_PACKAGES = setOf(
-            "com.android.chrome",              // Chrome
-            "com.chrome.beta",
-            "com.chrome.dev",
-            "org.mozilla.firefox",             // Firefox
-            "com.microsoft.emmx",              // Edge
-            "com.opera.browser",
-            "com.brave.browser",
-            "com.android.browser",             // AOSP / MIUI CN browser
-            "com.mi.globalbrowser",            // Mi Browser (global)
-            "com.heytap.browser",              // OPPO
-            "com.coloros.browser",
-            "com.vivo.browser",
-            "com.huawei.browser",
-            "com.sec.android.app.sbrowser",    // Samsung Internet
-            "com.tencent.mtt",                 // QQ 浏览器
-            "com.baidu.browser.apps",          // 百度浏览器
-        )
-
-        /** CN browsers that show their own splash ads on launch — the user
-         *  wants those skipped, so they stay in the detection pipeline even
-         *  though the browser intent query resolves them. */
-        private val SPLASH_AD_BROWSERS = setOf(
-            "com.UCMobile",                    // UC 浏览器
-            "com.ucmobile.lite",
-            "com.quark.browser",               // 夸克
-        )
     }
 }

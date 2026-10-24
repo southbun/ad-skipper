@@ -49,9 +49,17 @@ class YoloSkipDetector(private val context: Context) {
 
     fun findSkipButton(bitmap: Bitmap): Rect? {
         if (!isReady) return null
+        // A timed-out native task may still run; it must own its pixels.
+        val owned = bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+        var submitted = false
         return try {
-            executor.submit(Callable { detect(bitmap) }).get(15, TimeUnit.SECONDS)
+            val task = executor.submit(Callable {
+                try { detect(owned) } finally { owned.recycle() }
+            })
+            submitted = true
+            task.get(2, TimeUnit.SECONDS)
         } catch (t: Throwable) {
+            if (!submitted) owned.recycle()
             Timber.e(t, "YOLO detection failed")
             null
         }
@@ -76,12 +84,14 @@ class YoloSkipDetector(private val context: Context) {
         val padY = (IN_SIZE - h) / 2f
 
         val canvasBmp = Bitmap.createBitmap(IN_SIZE, IN_SIZE, Bitmap.Config.ARGB_8888)
+        val scaled = Bitmap.createScaledBitmap(bitmap, w, h, true)
         Canvas(canvasBmp).apply {
             drawColor(Color.rgb(114, 114, 114))
-            drawBitmap(Bitmap.createScaledBitmap(bitmap, w, h, true), padX, padY, null)
+            drawBitmap(scaled, padX, padY, null)
         }
+        if (scaled !== bitmap) scaled.recycle()
 
-        val out = YoloNative.nativeInfer(canvasBmp) ?: return null
+        val out = try { YoloNative.nativeInfer(canvasBmp) } finally { canvasBmp.recycle() } ?: return null
         // out layout: index = channel*ANCHORS + anchor; channels 0..3 = xywh
         // (640px letterbox coords), channel 4 = class score (already sigmoid).
         var best = -1f
@@ -170,7 +180,7 @@ class YoloSkipDetector(private val context: Context) {
         const val BIN_ASSET = "yolo.ncnn.bin"
         const val IN_SIZE = 640
         const val ANCHORS = 8400
-        const val CONF_THRESHOLD = 0.55f
+        const val CONF_THRESHOLD = 0.75f
 
         /** Bottom-center strip where splash branding (logo/slogan) lives;
          *  YOLO hits centered here are rejected as false positives. */

@@ -1,10 +1,12 @@
 package com.adskipper.core.detect
 
-enum class SkipLayer { L1_NODE, L2_OCR, L3_YOLO, L3_VLM }
+enum class SkipLayer { L0_LEARNED, L1_NODE, L2_OCR, L3_YOLO, L3_VLM }
 
 data class SkipTarget(
     val x: Float,
     val y: Float,
     val layer: SkipLayer,
     val detail: String = "",
+    val countdown: Int? = null,
+    val requiresCountdownProof: Boolean = false,
 )

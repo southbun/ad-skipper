@@ -13,6 +13,7 @@ android {
         externalNativeBuild {
             cmake {
                 abiFilters += "arm64-v8a"
+                targets += listOf("yolo_jni", "vlm_jni")
                 arguments += "-DANDROID_STL=c++_shared"
             }
         }
@@ -24,7 +25,7 @@ android {
     }
 
     aaptOptions {
-        noCompress += "gguf"
+        noCompress += listOf("bin", "param")
     }
 
     externalNativeBuild {
@@ -41,9 +42,9 @@ dependencies {
     api(libs.androidx.room.runtime)
     api(libs.androidx.room.ktx)
     api(libs.mlkit.text.recognition.chinese)
-    api(libs.okhttp)
     api(libs.timber)
     ksp(libs.androidx.room.compiler)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation("org.robolectric:robolectric:4.16.1")
 }

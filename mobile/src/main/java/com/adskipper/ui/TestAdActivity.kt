@@ -7,7 +7,9 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
-import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import kotlin.math.roundToInt
 
 /**
  * Fake splash ad for verifying the pipeline end-to-end: a full-screen "ad"
@@ -23,6 +25,13 @@ class TestAdActivity : ComponentActivity() {
         val root = FrameLayout(this).apply {
             setBackgroundColor(0xFF123456.toInt())
         }
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            view.setPadding(safe.left, safe.top, safe.right, safe.bottom)
+            insets
+        }
+        val topMargin = (24 * resources.displayMetrics.density).roundToInt()
+        val sideMargin = (12 * resources.displayMetrics.density).roundToInt()
         val title = TextView(this).apply {
             text = "这是一条模拟开屏广告"
             textSize = 28f
@@ -40,10 +49,18 @@ class TestAdActivity : ComponentActivity() {
         val lp = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         lp.gravity = Gravity.TOP or Gravity.END
-        lp.topMargin = 64
-        lp.marginEnd = 32
+        lp.topMargin = topMargin
+        lp.marginEnd = sideMargin
         root.addView(skip, lp)
+        root.addView(TextView(this).apply {
+            text = "广告"
+            textSize = 16f
+            setTextColor(0xFFFFFFFF.toInt())
+        }, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.START).apply { this.topMargin = topMargin; marginStart = sideMargin })
         setContentView(root)
+        ViewCompat.requestApplyInsets(root)
 
         timer = object : CountDownTimer(30000, 1000) {
             override fun onTick(millisUntilFinished: Long) {

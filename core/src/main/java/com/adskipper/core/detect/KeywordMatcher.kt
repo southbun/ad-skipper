@@ -1,37 +1,40 @@
 package com.adskipper.core.detect
 
-/**
- * Pure keyword matching shared by L1 (UI nodes) and L2 (OCR lines).
- * Returns the matched keyword, or null.
- */
 object KeywordMatcher {
-    /** [excluded]: exact texts that must never count as a hit — e.g. this
-     *  app's own label "广告跳过" contains the keyword "跳过", so every surface
-     *  listing installed apps (launcher search, app stores) would match it. */
-    fun matches(
-        text: String?,
-        keywords: Collection<String>,
-        excluded: Collection<String> = emptySet(),
-    ): String? {
-        if (text.isNullOrBlank()) return null
-        val lower = text.trim().lowercase()
-        if (excluded.any { lower == it.trim().lowercase() }) return null
-        return keywords.firstOrNull { kw ->
-            kw.isNotBlank() && lower.contains(kw.trim().lowercase())
-        }
+    private val whitespace = Regex("\\s+")
+    private const val countdownToken = "[（(\\[【]?\\s*(\\d{1,2})\\s*(?:s|秒)?\\s*[）)\\]】]?"
+    private val leadingCountdown = Regex("^$countdownToken\\s*[|·]?\\s*", RegexOption.IGNORE_CASE)
+    private val trailingCountdown = Regex("\\s*[|·]?\\s*$countdownToken$", RegexOption.IGNORE_CASE)
+    private val countdownLabels = listOf("跳过", "Skip", "跳过广告", "关闭广告", "Skip Ad", "skip_ad")
+    private fun normalized(text: String) = text.trim().lowercase().replace(whitespace, " ")
+
+    fun matches(text: String?, keywords: Collection<String>, excluded: Collection<String> = emptySet()): String? {
+        if (!isPlausibleButtonText(text)) return null
+        val value = normalized(text!!)
+        if (excluded.any { value == normalized(it) }) return null
+        val label = value.replace(leadingCountdown, "").replace(trailingCountdown, "").trim()
+        return keywords.firstOrNull { it.isNotBlank() && label == normalized(it) }
     }
 
-    /** Ad skip buttons are short — long prose mentioning "跳过" is usually
-     *  content text, not a button. */
     fun isPlausibleButtonText(text: String?): Boolean =
         !text.isNullOrBlank() && text.trim().length <= 16
 
-    /** L2: first OCR line that reads like a skip button. */
-    fun findSkipLine(
-        lines: List<OcrLine>,
-        keywords: Collection<String>,
-        excluded: Collection<String> = emptySet(),
-    ): OcrLine? = lines.firstOrNull { line ->
-        isPlausibleButtonText(line.text) && matches(line.text, keywords, excluded) != null
+    fun countdown(text: String?): Int? {
+        if (matches(text, countdownLabels) == null) return null
+        val value = normalized(text!!)
+        val leading = leadingCountdown.find(value)
+        val trailing = trailingCountdown.find(value)
+        if (leading != null && trailing != null) return null
+        return (leading ?: trailing)?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it in 0..30 }
     }
+
+    fun isAdEvidence(text: String?): Boolean {
+        if (text.isNullOrBlank()) return false
+        val value = normalized(text).replace(" ", "").trim('|', '·', '[', ']', '【', '】')
+        return value == "广告" || value == "advertisement" ||
+            matches(text, listOf("跳过广告", "关闭广告", "Skip Ad", "skip_ad")) != null
+    }
+
+    fun findSkipLine(lines: List<OcrLine>, keywords: Collection<String>, excluded: Collection<String> = emptySet()): OcrLine? =
+        lines.firstOrNull { matches(it.text, keywords, excluded) != null }
 }

@@ -1,173 +1,59 @@
 package com.adskipper.ui.model
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.adskipper.AdSkipperApp
-import com.adskipper.core.data.AppSettings
-import com.adskipper.core.model.ModelCatalog
-import com.adskipper.core.model.ModelInfo
-import com.adskipper.core.model.ModelManager
-import kotlinx.coroutines.launch
+import com.adskipper.core.learn.LearningController
 
 @Composable
 fun ModelScreen() {
-    val context = LocalContext.current
-    val app = AdSkipperApp.get(context)
-    val settings by app.settingsRepo.settings.collectAsState(initial = AppSettings())
-    val scope = rememberCoroutineScope()
+    val app = AdSkipperApp.get(LocalContext.current)
+    val manager = app.modelManager
+    val status by manager.status.collectAsState()
+    val learning by LearningController.state.collectAsState()
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("模型", style = MaterialTheme.typography.headlineMedium)
-        Text(
-            "模型从 ModelScope 下载（国内可直接访问），失败时自动回退 hf-mirror。也可以手动导入本地 GGUF。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        ModelCatalog.all.forEach { model ->
-            ModelCard(
-                model = model,
-                active = settings.activeModelId == model.id ||
-                    (settings.activeModelId == null && model.id == ModelCatalog.default.id),
-                manager = app.modelManager,
-                onActivate = { scope.launch { app.settingsRepo.setActiveModelId(model.id) } },
-            )
-        }
-    }
-}
-
-@Composable
-private fun ModelCard(
-    model: ModelInfo,
-    active: Boolean,
-    manager: ModelManager,
-    onActivate: () -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    // Re-check download state whenever the model changes.
-    var downloaded by remember(model.id) { mutableStateOf(manager.isDownloaded(model)) }
-    var progress by remember { mutableStateOf<ModelManager.DownloadEvent.Progress?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var downloading by remember { mutableStateOf(false) }
-
-    val context = LocalContext.current
-    val pickModel = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { scope.launch { manager.importCustomFile(it, "model.gguf"); downloaded = manager.isDownloaded(model) } }
-    }
-    val pickMmproj = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { scope.launch { manager.importCustomFile(it, "mmproj.gguf"); downloaded = manager.isDownloaded(model) } }
-    }
-
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(
-                    selected = active,
-                    onClick = onActivate,
-                    enabled = downloaded || model.bundled,
-                )
-                Column {
-                    Text(model.displayName, style = MaterialTheme.typography.titleMedium)
-                    Text(model.description, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-
-            if (downloading) {
-                val p = progress
-                LinearProgressIndicator(
-                    progress = {
-                        if (p != null && p.totalBytes > 0)
-                            p.downloadedBytes.toFloat() / p.totalBytes else 0f
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    if (p != null && p.totalBytes > 0)
-                        "${p.file}  %.1f MB / %.1f MB".format(
-                            p.downloadedBytes / 1048576f, p.totalBytes / 1048576f)
-                    else "下载中…",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            error?.let { Text("下载失败：$it", color = MaterialTheme.colorScheme.error) }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (model.id == ModelCatalog.custom.id) {
-                    OutlinedButton(onClick = { pickModel.launch(arrayOf("*/*")) }) {
-                        Text("导入模型 GGUF")
-                    }
-                    OutlinedButton(onClick = { pickMmproj.launch(arrayOf("*/*")) }) {
-                        Text("导入 mmproj GGUF")
-                    }
-                } else if (!downloaded && !downloading && !model.bundled) {
-                    Button(onClick = {
-                        downloading = true
-                        error = null
-                        scope.launch {
-                            manager.download(model).collect { event ->
-                                when (event) {
-                                    is ModelManager.DownloadEvent.Progress -> progress = event
-                                    is ModelManager.DownloadEvent.Done -> {
-                                        downloading = false
-                                        downloaded = true
-                                    }
-                                    is ModelManager.DownloadEvent.Error -> {
-                                        downloading = false
-                                        error = event.message
-                                    }
-                                }
-                            }
-                        }
-                    }) { Text("下载") }
-                }
-                if (model.bundled) {
-                    Text("已内置", color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.align(Alignment.CenterVertically))
-                } else if (downloaded && !downloading) {
-                    Text("已下载", color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.align(Alignment.CenterVertically))
-                    if (model.id != ModelCatalog.custom.id) {
-                        OutlinedButton(onClick = {
-                            manager.delete(model)
-                            downloaded = false
-                        }) { Text("删除") }
-                    }
+        Text("本地 AI", style = MaterialTheme.typography.headlineMedium)
+        Text("在“应用 → 学习 / 规则”中采集广告，由本地模型提议跳过按钮，再确认保存。无需账号或 Token。")
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("InternVL3-2B", style = MaterialTheme.typography.titleLarge)
+                Text("模型约 1.5GB，建议连接 Wi-Fi 下载。下载完成后可离线识别。")
+                if (status.running) {
+                    LinearProgressIndicator(
+                        progress = { (status.bytes.toFloat() / manager.totalBytes).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text("${status.message}  %.0f / %.0f MB".format(status.bytes / 1048576f, manager.totalBytes / 1048576f))
+                    OutlinedButton(onClick = manager::cancelDownload) { Text("暂停下载") }
+                } else if (!status.downloaded) {
+                    status.message.takeIf { it.isNotEmpty() }?.let { Text(it) }
+                    Button(onClick = manager::startDownload) { Text("下载本地模型") }
+                } else {
+                    Text("模型文件已就绪，学习时按需加载")
+                    Text("本次学习实际识别次数：${learning.inferenceCount}；${learning.message.ifBlank { "尚未开始学习" }}" +
+                        if (learning.elapsedMs > 0) "（${learning.elapsedMs} ms）" else "")
                 }
             }
         }
+        Text("学习采用独立进程和 CPU，首次分析可能需要几十秒。日常跳过优先匹配已确认规则，旧大模型自动兜底保持暂停。", style = MaterialTheme.typography.bodySmall)
     }
 }

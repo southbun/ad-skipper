@@ -7,8 +7,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -26,21 +27,25 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.adskipper.ui.home.HomeScreen
+import com.adskipper.ui.apps.AppsScreen
+import com.adskipper.ui.apps.LearningScreen
 import com.adskipper.ui.model.ModelScreen
 import com.adskipper.ui.settings.SettingsScreen
 import com.adskipper.ui.stats.StatsScreen
 
 object Routes {
     const val HOME = "home"
+    const val APPS = "apps"
     const val SETTINGS = "settings"
-    const val MODELS = "models"
     const val STATS = "stats"
+    const val MODEL = "model"
 }
 
 private val tabs = listOf(
     Triple(Routes.HOME, "首页", Icons.Filled.Home),
+    Triple(Routes.APPS, "应用", Icons.Filled.Apps),
+    Triple(Routes.MODEL, "本地 AI", Icons.Filled.Psychology),
     Triple(Routes.SETTINGS, "设置", Icons.Filled.Settings),
-    Triple(Routes.MODELS, "模型", Icons.Filled.Memory),
     Triple(Routes.STATS, "统计", Icons.Filled.BarChart),
 )
 
@@ -87,9 +92,16 @@ private fun AppNavHost() {
             startDestination = Routes.HOME,
             modifier = Modifier.padding(padding),
         ) {
-            composable(Routes.HOME) { HomeScreen() }
+            composable(Routes.HOME) {
+                HomeScreen(onSelectApps = { nav.navigate(Routes.APPS) { launchSingleTop = true } })
+            }
+            composable(Routes.APPS) { AppsScreen(onLearn = { nav.navigate("learn/${android.net.Uri.encode(it)}") }) }
+            composable("learn/{packageName}") { entry ->
+                LearningScreen(entry.arguments!!.getString("packageName")!!,
+                    onBack = { nav.popBackStack() }, onModels = { nav.navigate(Routes.MODEL) })
+            }
+            composable(Routes.MODEL) { ModelScreen() }
             composable(Routes.SETTINGS) { SettingsScreen() }
-            composable(Routes.MODELS) { ModelScreen() }
             composable(Routes.STATS) { StatsScreen() }
         }
     }

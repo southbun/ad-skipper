@@ -10,16 +10,14 @@ android {
     namespace = "com.adskipper"
 
     defaultConfig {
-        applicationId = "com.tangzixiang.adskipper"
+        applicationId = "com.southbun.adskipper"
     }
 
     buildFeatures.compose = true
+    testOptions.unitTests.isIncludeAndroidResources = true
 
-    // GGUF/TFLite assets must stay uncompressed so AssetManager.openFd works
-    // (noCompress in a library module does not propagate to packaging).
     aaptOptions {
-        noCompress += "gguf"
-        noCompress += "tflite"
+        noCompress += listOf("bin", "param")
     }
 }
 
@@ -37,4 +35,6 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
 
     implementation(libs.coil.compose)
+    testImplementation(libs.junit)
+    testImplementation("org.robolectric:robolectric:4.16.1")
 }
