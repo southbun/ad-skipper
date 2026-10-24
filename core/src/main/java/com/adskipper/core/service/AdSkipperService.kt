@@ -111,6 +111,9 @@ class AdSkipperService : AccessibilityService() {
     private lateinit var visualFallback: VisualFallback<Bitmap>
     private var learningOverlay: LearningOverlay? = null
     private var demonstrationOverlay: DemonstrationOverlay? = null
+    private var demonstrationFrame: Bitmap? = null
+    private var demonstrationFrameAt = 0L
+    private var demonstrationWindowId = -1
     private val learnedRules by lazy { LearnedRuleRepository.get(this) }
     private var learningCaptureJob: Job? = null
     private var yolo: YoloSkipDetector? = null
@@ -227,7 +230,7 @@ class AdSkipperService : AccessibilityService() {
         if (session == null) {
             if (!allowed) {
                 pollJob?.cancel(); autoLearningJob?.cancel(); demonstrationJob?.cancel()
-                demonstrationOverlay?.hide()
+                clearDemonstration()
             }
             return
         }
@@ -240,7 +243,7 @@ class AdSkipperService : AccessibilityService() {
         feedbackJob?.cancel()
         autoLearningJob?.cancel()
         demonstrationJob?.cancel()
-        demonstrationOverlay?.hide()
+        clearDemonstration()
         overlay.dismiss()
         pollingId = session.id
         val updates = Channel<Unit>(Channel.CONFLATED).also { pollUpdates = it }
@@ -270,7 +273,7 @@ class AdSkipperService : AccessibilityService() {
                 updates.close()
                 if (wakeLock.isHeld) wakeLock.release()
                 if (pollingId == session.id) {
-                    demonstrationOverlay?.hide()
+                    clearDemonstration()
                     pollingId = null
                     pollUpdates = null
                 }
@@ -292,7 +295,13 @@ class AdSkipperService : AccessibilityService() {
         autoLearningJob = null
         demonstrationJob?.cancel()
         demonstrationJob = null
+        clearDemonstration()
+    }
+
+    private fun clearDemonstration() {
         demonstrationOverlay?.hide()
+        demonstrationFrame?.recycle()
+        demonstrationFrame = null
     }
 
     private fun clearVisualFallback() {
@@ -353,7 +362,16 @@ class AdSkipperService : AccessibilityService() {
                     }
                 }
             }
-            if (demonstrating) return null
+            if (demonstrating) {
+                capture()?.let { image ->
+                    frames.remove(image)
+                    demonstrationFrame?.recycle()
+                    demonstrationFrame = image
+                    demonstrationFrameAt = SystemClock.elapsedRealtime()
+                    demonstrationWindowId = node.windowId
+                }
+                return null
+            }
             val result = withTimeoutOrNull(remaining) {
                 withContext(Dispatchers.Default) {
                     pipeline.detect(
@@ -481,10 +499,15 @@ class AdSkipperService : AccessibilityService() {
     }
 
     private fun showDemonstration(session: SplashSessionTracker.Session, revision: Long) {
+        if (demonstrationFrame == null || SystemClock.elapsedRealtime() - demonstrationFrameAt > 800L) {
+            DemonstrationLearning.report(session.packageName, "示范需要可读截图，本轮等待截图")
+            return
+        }
         val shown = demonstrationOverlay?.show(
             onTouch = { touch -> recordDemonstration(session, revision, touch) },
             onCancel = {
                 sessions.finish(session)
+                clearDemonstration()
                 DemonstrationLearning.report(session.packageName, "本轮示范已取消，下次启动继续等待")
             },
         ) == true
@@ -498,6 +521,10 @@ class AdSkipperService : AccessibilityService() {
 
     private fun recordDemonstration(session: SplashSessionTracker.Session, revision: Long, touch: DemonstrationTouch) {
         if (!sessions.isCurrent(session, SystemClock.elapsedRealtime()) || revision != settingsRevision) return
+        val source = demonstrationFrame
+        val sourceAt = demonstrationFrameAt
+        val sourceWindow = demonstrationWindowId
+        demonstrationFrame = null
         sessions.finish(session)
         pollJob?.cancel()
         autoLearningJob?.cancel()
@@ -532,7 +559,15 @@ class AdSkipperService : AccessibilityService() {
                     report("页面已变化，本次示范已取消")
                     return@launch
                 }
-                // A failed sample must not swallow the user's demonstrated click or swipe.
+                if (touch.tap) {
+                    val fresh = before
+                    if (fresh == null) { report("截图失败，请直接再点跳过；本轮未学习"); return@launch }
+                    if (source == null || sourceWindow != windowId || started - sourceAt !in 0L..800L ||
+                        !FrameVerifier.matches(source, fresh, SkipTarget(touch.x, touch.y, SkipLayer.L0_LEARNED))) {
+                        report("按钮画面已变化，请直接再点跳过；本轮未学习")
+                        return@launch
+                    }
+                }
                 val completed = if (touch.tap) performClick(touch.x, touch.y)
                     else performGesture(touch.path, touch.durationMs)
                 val clickedAt = SystemClock.elapsedRealtime()
@@ -559,6 +594,7 @@ class AdSkipperService : AccessibilityService() {
             } catch (_: Exception) {
                 report("本轮示范未保存，请重试")
             } finally {
+                source?.recycle()
                 before?.recycle()
                 after?.recycle()
             }

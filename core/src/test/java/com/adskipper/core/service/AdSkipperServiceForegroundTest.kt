@@ -161,6 +161,15 @@ class AdSkipperServiceForegroundTest {
         assertTrue(next.isCancelled)
     }
 
+    @Test fun leavingTheAppReleasesTheTemporaryDemonstrationFrame() {
+        send(app, app)
+        val image = android.graphics.Bitmap.createBitmap(320, 640, android.graphics.Bitmap.Config.ARGB_8888)
+        ReflectionHelpers.setField(service, "demonstrationFrame", image)
+        send(home, home)
+        assertTrue(image.isRecycled)
+        assertNull(ReflectionHelpers.getField<android.graphics.Bitmap?>(service, "demonstrationFrame"))
+    }
+
     @Test fun leavingForAnUnreadableUnselectedAppEndsTheSession() {
         send(app, app)
         val first = current()!!

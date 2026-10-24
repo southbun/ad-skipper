@@ -56,11 +56,12 @@ class DemonstrationOverlay(private val service: AccessibilityService) {
                     if (recorded != null) {
                         recorded.lineTo(event.rawX, event.rawY)
                         val duration = (event.eventTime - event.downTime).coerceIn(1L, 5_000L)
-                        onTouch(DemonstrationTouch(recorded, x, y, duration, !moved && duration <= 500L))
+                        onTouch(DemonstrationTouch(recorded, x, y, duration, !moved && duration <= 500L &&
+                            abs(event.rawX - x) <= slop && abs(event.rawY - y) <= slop))
                     }
                 }
                 MotionEvent.ACTION_POINTER_DOWN -> { path = null; hide(); onCancel() }
-                MotionEvent.ACTION_CANCEL -> { path = null }
+                MotionEvent.ACTION_CANCEL -> { path = null; hide(); onCancel() }
             }
             true
         }
