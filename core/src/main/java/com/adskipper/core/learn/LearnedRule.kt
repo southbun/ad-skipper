@@ -103,10 +103,20 @@ object LearnedMatcher {
         val page = sample(image, pageBox(image.width, image.height), 16, 28)
         return candidates.firstOrNull { rule ->
             similar(rule.page, page, 18, 0.95f) &&
-                similar(rule.button, sample(image, rule.box, 20, 10), 22, 0.94f) &&
+                matchesButton(rule, image) &&
                 // A flat background is not a distinctive button template.
                 distinctive(rule.button) && distinctivePage(rule.page)
         }
+    }
+
+    private fun matchesButton(rule: LearnedRule, image: Bitmap): Boolean {
+        // Text rasterization can shift a few pixels between launches; retain the same color threshold.
+        val offsets = listOf(0, -1, 1, -2, 2, -3, 3)
+        return offsets.any { dy -> offsets.any { dx ->
+            val box = Rect(rule.box).apply { offset(dx, dy) }
+            box.left >= 0 && box.top >= 0 && box.right <= image.width && box.bottom <= image.height &&
+                similar(rule.button, sample(image, box, 20, 10), 22, 0.94f)
+        } }
     }
 
     private fun pageBox(width: Int, height: Int) = Rect(0, height * 6 / 100, width, height * 94 / 100)

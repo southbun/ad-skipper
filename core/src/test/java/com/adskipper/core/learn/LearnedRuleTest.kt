@@ -39,6 +39,20 @@ class LearnedRuleTest {
         assertNotNull(LearnedMatcher.findVisual(listOf(rule), before, pkg, 7))
     }
 
+    @Test fun slightButtonRasterShiftsMatchButANewButtonPositionDoesNot() {
+        val original = image()
+        val rule = rule(original)
+        val pixels = IntArray(box.width() * box.height())
+        original.getPixels(pixels, 0, box.width(), box.left, box.top, box.width(), box.height())
+        fun moved(dx: Int, dy: Int) = image().apply {
+            for (y in box.top until box.bottom) for (x in box.left until box.right)
+                setPixel(x, y, Color.rgb(x * 255 / width, y * 255 / height, (x + y) % 256))
+            setPixels(pixels, 0, box.width(), box.left + dx, box.top + dy, box.width(), box.height())
+        }
+        assertEquals(rule.id, LearnedMatcher.findVisual(listOf(rule), moved(2, -2), pkg, 7)?.id)
+        assertNull(LearnedMatcher.findVisual(listOf(rule), moved(-40, 0), pkg, 7))
+    }
+
     @Test fun changedPageWithTheSameButtonIsRejected() {
         val original = image()
         val rule = rule(original)
