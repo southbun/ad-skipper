@@ -83,6 +83,7 @@ fun LearningScreen(packageName: String, onBack: () -> Unit, onModels: () -> Unit
         Text("学习跳过按钮", style = MaterialTheme.typography.headlineMedium)
         Text(info?.first ?: packageName)
         Text("已开启的应用会自动学习核验成功的文字跳过按钮。下次启动优先匹配已保存规则，无需手动采集。")
+        if (!settings.layer2Enabled) Text("图片文字识别已关闭，后台自动学习暂停；手动采集仍可使用。")
         Text("未学会的广告可在这里手动补充：开启采集后，打开目标应用，在广告出现时点“采集当前广告”，再返回分析并确认。")
         Text("学习只在本机进行。保存按钮特征和控件描述；完整截图在保存、放弃或进程重启时删除。")
         if (!connected) Text("请先开启无障碍服务")

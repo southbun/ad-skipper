@@ -30,7 +30,7 @@ object AutomaticLearning {
         if (!nodeAdEvidence && lines.none { KeywordMatcher.isAdEvidence(it.text) } &&
             !(target.requiresCountdownProof && countdown != null)) return null
         return LearnedMatcher.create(pkg, version, image, box, nodes).takeIf {
-            it.node != null || LearnedMatcher.findVisual(listOf(it), image, pkg, version) != null
+            (it.node != null && nodeAdEvidence) || LearnedMatcher.findVisual(listOf(it), image, pkg, version) != null
         }
     }
 

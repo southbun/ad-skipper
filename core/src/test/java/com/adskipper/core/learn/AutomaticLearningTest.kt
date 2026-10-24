@@ -87,6 +87,9 @@ class AutomaticLearningTest {
 
     @Test fun aFeaturelessImageWithoutANodeIdCannotCreateAnUnusableRule() {
         assertNull(AutomaticLearning.propose(pkg, 7, changed(), target, listOf(skip, badge), emptyList(), false))
+        val node = LearnedNode("test:id/skip", "android.widget.Button", "跳过", Rect(220, 50, 310, 90))
+        assertNull(AutomaticLearning.propose(pkg, 7, changed(), target, listOf(skip, badge), listOf(node), false))
+        assertNotNull(AutomaticLearning.propose(pkg, 7, changed(), target, listOf(skip, badge), listOf(node), true))
     }
 
     @Test fun disappearingTextAloneDoesNotConfirmAnExit() {

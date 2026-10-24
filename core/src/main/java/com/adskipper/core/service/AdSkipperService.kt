@@ -398,7 +398,8 @@ class AdSkipperService : AccessibilityService() {
                 (first.detail != verified.detail || learnedRules.rules.value.none { it.id == verified.detail })) return false
 
             // Reuse OCR frames; a first node-only lesson may capture for at most 300 ms.
-            val learningImage = if (verified.layer == SkipLayer.L1_NODE || verified.layer == SkipLayer.L2_OCR) {
+            val learningImage = if (snapshot.layer2Enabled &&
+                (verified.layer == SkipLayer.L1_NODE || verified.layer == SkipLayer.L2_OCR)) {
                 frames.lastOrNull() ?: withTimeoutOrNull(minOf(300L,
                     sessions.remainingMs(session, SystemClock.elapsedRealtime()))) {
                     ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add)
