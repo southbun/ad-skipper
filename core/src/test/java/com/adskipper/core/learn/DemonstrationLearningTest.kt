@@ -81,4 +81,16 @@ class DemonstrationLearningTest {
         val flat = Bitmap.createBitmap(320, 640, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
         assertNull(DemonstrationLearning.propose(pkg, 7, flat, 265f, 85f, emptyList()))
     }
+
+    @Test fun secureBlackFramesWithVisibleSystemBarsCannotStartTeaching() {
+        val masked = Bitmap.createBitmap(320, 640, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(Color.BLACK)
+            for (y in 0 until 32) for (x in 0 until width)
+                setPixel(x, y, Color.rgb(x * 255 / width, y * 255 / 32, (x + y) % 256))
+        }
+        assertFalse(LearnedMatcher.canLearnPage(masked))
+        masked.eraseColor(Color.WHITE)
+        assertFalse(LearnedMatcher.canLearnPage(masked))
+        assertTrue(LearnedMatcher.canLearnPage(image()))
+    }
 }

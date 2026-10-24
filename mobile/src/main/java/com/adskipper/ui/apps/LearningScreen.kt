@@ -94,14 +94,14 @@ fun LearningScreen(packageName: String, onBack: () -> Unit, onModels: () -> Unit
                     app.settingsRepo.setDemonstrationEnabled(packageName, value)
                 } })
         }
-        Text("开启后，每次启动先匹配旧规则；未命中时显示示范提示。直接点广告上的跳过，程序转发这次点按，核验后自动保存。换位置或样式可继续示范，无需 OCR、大模型或逐次采集保存。")
-        Text("示范只在启动后的 8 秒内等待。没有广告时请点提示取消，避免把正常操作学进去。示范点按会短暂等待截图；滑动只转发、不学习，多指操作会取消本轮。")
+        Text("旧规则命中就自动跳过；看到示范提示后，直接点广告的跳过按钮，核验后自动保存。换位置或样式可继续示范，无需下载模型。")
+        Text("仅启动后 8 秒等待。没有广告请点浮窗取消；点按会短暂等待截图。滑动只转发，多指取消本轮；安全窗口或画面不可读时暂停示范。")
         if (demonstration.packageName == packageName && demonstration.message.isNotBlank()) Text(demonstration.message)
         if (packageName !in settings.demonstrationPackages) {
             Text("未开启示范学习时，继续普通识别，并自动学习核验成功的文字跳过按钮。")
             if (!settings.layer2Enabled) Text("图片文字识别已关闭，文字按钮自动学习暂停；示范学习和手动采集仍可使用。")
         }
-        Text("未学会的广告可在这里手动补充：开启采集后，打开目标应用，在广告出现时点“采集当前广告”，再返回分析并确认。")
+        Text("也可用下方“采集新广告”截图框选，手动补充规则。")
         Text("学习只在本机进行。保存按钮特征和控件描述；完整截图在保存、放弃或进程重启时删除。")
         if (!connected) Text("请先开启无障碍服务")
         if (!enabled) Text("请先打开总开关，并在应用列表中开启此应用")

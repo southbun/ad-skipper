@@ -499,7 +499,10 @@ class AdSkipperService : AccessibilityService() {
     }
 
     private fun showDemonstration(session: SplashSessionTracker.Session, revision: Long) {
-        if (demonstrationFrame == null || SystemClock.elapsedRealtime() - demonstrationFrameAt > 800L) {
+        val frame = demonstrationFrame
+        if (frame == null || SystemClock.elapsedRealtime() - demonstrationFrameAt > 800L ||
+            !LearnedMatcher.canLearnPage(frame)) {
+            demonstrationOverlay?.hide()
             DemonstrationLearning.report(session.packageName, "示范需要可读截图，本轮等待截图")
             return
         }

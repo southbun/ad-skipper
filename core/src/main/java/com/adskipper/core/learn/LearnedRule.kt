@@ -123,6 +123,9 @@ object LearnedMatcher {
         a.packageName == b.packageName && a.version == b.version && a.width == b.width && a.height == b.height &&
             near(a.box, b.box, 3) && similar(a.page, b.page, 18, 0.95f) && similar(a.button, b.button, 22, 0.94f)
 
+    internal fun canLearnPage(image: Bitmap): Boolean =
+        distinctivePage(sample(image, pageBox(image.width, image.height), 16, 28))
+
     private fun pageBox(width: Int, height: Int) = Rect(0, height * 6 / 100, width, height * 94 / 100)
     private fun near(a: Rect, b: Rect, pixels: Int = 12) = abs(a.left - b.left) <= pixels && abs(a.top - b.top) <= pixels &&
         abs(a.right - b.right) <= pixels && abs(a.bottom - b.bottom) <= pixels
