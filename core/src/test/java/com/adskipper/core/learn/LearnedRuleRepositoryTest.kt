@@ -33,10 +33,23 @@ class LearnedRuleRepositoryTest {
         val repo = LearnedRuleRepository(java.io.File(temp.root, "rules.json"))
         val other = rule("another.app")
         repo.save(other)
-        val rules = List(10) { rule() }
+        val rules = List(10) { i -> rule().copy(box = Rect(10 + i * 20, 55, 25 + i * 20, 85)) }
         rules.forEach(repo::save)
         assertEquals(rules.takeLast(8).map { it.id }, repo.rules.value.filter { it.packageName == "test.ad.app" }.map { it.id })
         assertTrue(other in repo.rules.value)
+    }
+
+    @Test fun repeatedDemonstrationsUpdateTheSameTemplateButKeepOtherPositions() {
+        val file = java.io.File(temp.root, "rules.json")
+        val repo = LearnedRuleRepository(file)
+        val upper = rule()
+        val lower = rule().copy(box = Rect(240, 500, 290, 530))
+        repo.save(upper)
+        repo.save(lower)
+        repo.save(upper.copy(id = "new-demonstration", createdAt = upper.createdAt + 1))
+        val reopened = LearnedRuleRepository(file).rules.value
+        assertEquals(listOf(lower.id, upper.id), reopened.map { it.id })
+        assertEquals(upper.createdAt + 1, reopened.last().createdAt)
     }
 
     @Test fun corruptDataIsPreservedInsteadOfSilentlyOverwritten() {

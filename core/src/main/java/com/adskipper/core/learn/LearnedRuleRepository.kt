@@ -32,8 +32,9 @@ class LearnedRuleRepository(file: File) {
     @Synchronized fun save(rule: LearnedRule) {
         require(rule.valid())
         val current = mutableRules.value
+        val saved = current.lastOrNull { LearnedMatcher.sameTemplate(it, rule) }?.let { rule.copy(id = it.id) } ?: rule
         val retained = current.filter { it.packageName != rule.packageName } +
-            current.filter { it.packageName == rule.packageName && it.id != rule.id }.takeLast(7) + rule
+            current.filter { it.packageName == rule.packageName && it.id != saved.id }.takeLast(7) + saved
         write(retained)
     }
 

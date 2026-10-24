@@ -109,7 +109,7 @@ object LearnedMatcher {
         }
     }
 
-    private fun matchesButton(rule: LearnedRule, image: Bitmap): Boolean {
+    internal fun matchesButton(rule: LearnedRule, image: Bitmap): Boolean {
         // Text rasterization can shift a few pixels between launches; retain the same color threshold.
         val offsets = listOf(0, -1, 1, -2, 2, -3, 3)
         return offsets.any { dy -> offsets.any { dx ->
@@ -118,6 +118,10 @@ object LearnedMatcher {
                 similar(rule.button, sample(image, box, 20, 10), 22, 0.94f)
         } }
     }
+
+    internal fun sameTemplate(a: LearnedRule, b: LearnedRule): Boolean =
+        a.packageName == b.packageName && a.version == b.version && a.width == b.width && a.height == b.height &&
+            near(a.box, b.box) && similar(a.page, b.page, 18, 0.95f) && similar(a.button, b.button, 22, 0.94f)
 
     private fun pageBox(width: Int, height: Int) = Rect(0, height * 6 / 100, width, height * 94 / 100)
     private fun near(a: Rect, b: Rect) = abs(a.left - b.left) <= 12 && abs(a.top - b.top) <= 12 &&

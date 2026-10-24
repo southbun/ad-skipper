@@ -21,6 +21,7 @@ import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.adskipper.core.data.AppSettings
 import com.adskipper.core.data.SettingsRepository
@@ -34,6 +35,9 @@ import com.adskipper.core.detect.VisualFallback
 import com.adskipper.core.model.ModelManager
 import com.adskipper.core.learn.LearnedMatcher
 import com.adskipper.core.learn.AutomaticLearning
+import com.adskipper.core.learn.DemonstrationLearning
+import com.adskipper.core.learn.DemonstrationOverlay
+import com.adskipper.core.learn.DemonstrationTouch
 import com.adskipper.core.learn.LearnedNode
 import com.adskipper.core.learn.LearnedRuleRepository
 import com.adskipper.core.learn.LearningController
@@ -99,12 +103,14 @@ class AdSkipperService : AccessibilityService() {
     private var pollUpdates: Channel<Unit>? = null
     private var feedbackJob: Job? = null
     private var autoLearningJob: Job? = null
+    private var demonstrationJob: Job? = null
     private var modelJob: Job? = null
     private var pollingId: Long? = null
     private lateinit var stats: StatsRepository
     private lateinit var overlay: DebugOverlay
     private lateinit var visualFallback: VisualFallback<Bitmap>
     private var learningOverlay: LearningOverlay? = null
+    private var demonstrationOverlay: DemonstrationOverlay? = null
     private val learnedRules by lazy { LearnedRuleRepository.get(this) }
     private var learningCaptureJob: Job? = null
     private var yolo: YoloSkipDetector? = null
@@ -128,6 +134,7 @@ class AdSkipperService : AccessibilityService() {
         stats = StatsRepository(this)
         overlay = DebugOverlay(this)
         learningOverlay = LearningOverlay(this)
+        demonstrationOverlay = DemonstrationOverlay(this)
         visualFallback = VisualFallback(
             scope,
             detect = { image, timeout ->
@@ -211,13 +218,17 @@ class AdSkipperService : AccessibilityService() {
         }
         val allowed = settings.masterEnabled &&
             (settings.layer1Enabled || settings.layer2Enabled || settings.layer3Enabled || settings.vlmEnabled ||
+                pkg in settings.demonstrationPackages ||
                 learnedRules.rules.value.any { it.packageName == pkg }) &&
             !LearningController.collecting(pkg) &&
             appAllowed(pkg) &&
             getSystemService(PowerManager::class.java).isInteractive
         val session = sessions.observeForeground(pkg, allowed, SystemClock.elapsedRealtime())
         if (session == null) {
-            if (!allowed) { pollJob?.cancel(); autoLearningJob?.cancel() }
+            if (!allowed) {
+                pollJob?.cancel(); autoLearningJob?.cancel(); demonstrationJob?.cancel()
+                demonstrationOverlay?.hide()
+            }
             return
         }
         if (pollingId == session.id) {
@@ -228,6 +239,8 @@ class AdSkipperService : AccessibilityService() {
         pollJob?.cancel()
         feedbackJob?.cancel()
         autoLearningJob?.cancel()
+        demonstrationJob?.cancel()
+        demonstrationOverlay?.hide()
         overlay.dismiss()
         pollingId = session.id
         val updates = Channel<Unit>(Channel.CONFLATED).also { pollUpdates = it }
@@ -257,6 +270,7 @@ class AdSkipperService : AccessibilityService() {
                 updates.close()
                 if (wakeLock.isHeld) wakeLock.release()
                 if (pollingId == session.id) {
+                    demonstrationOverlay?.hide()
                     pollingId = null
                     pollUpdates = null
                 }
@@ -276,6 +290,9 @@ class AdSkipperService : AccessibilityService() {
         feedbackJob = null
         autoLearningJob?.cancel()
         autoLearningJob = null
+        demonstrationJob?.cancel()
+        demonstrationJob = null
+        demonstrationOverlay?.hide()
     }
 
     private fun clearVisualFallback() {
@@ -302,6 +319,7 @@ class AdSkipperService : AccessibilityService() {
         val windowId = root.windowId
         val revision = settingsRevision
         val snapshot = settings
+        val demonstrating = session.packageName in snapshot.demonstrationPackages
         val rules = learnedRules.rules.value.filter { it.packageName == session.packageName }
         val appVersion = runCatching {
             packageManager.getPackageInfo(session.packageName, 0).longVersionCode
@@ -318,7 +336,7 @@ class AdSkipperService : AccessibilityService() {
                 return SkipTarget(box.exactCenterX(), box.exactCenterY(), SkipLayer.L0_LEARNED, rule.id)
             }
             val evidence = NodeMatcher.hasAdEvidence(node)
-            if (snapshot.layer1Enabled && evidence) {
+            if (!demonstrating && snapshot.layer1Enabled && evidence) {
                 NodeMatcher.findSkipNode(node, snapshot.keywords, selfLabels)?.let { box ->
                     return SkipTarget(box.exactCenterX(), box.exactCenterY(), SkipLayer.L1_NODE)
                 }
@@ -335,6 +353,7 @@ class AdSkipperService : AccessibilityService() {
                     }
                 }
             }
+            if (demonstrating) return null
             val result = withTimeoutOrNull(remaining) {
                 withContext(Dispatchers.Default) {
                     pipeline.detect(
@@ -359,6 +378,10 @@ class AdSkipperService : AccessibilityService() {
             // A ready model proposal goes straight to fresh-frame verification.
             val fast = if (proposal == null) pass(root) else null
             val first = fast ?: proposal?.target ?: run {
+                if (demonstrating && SystemClock.elapsedRealtime() - session.startedAt >= 400L &&
+                    revision == settingsRevision && validRoot(session) != null) {
+                    showDemonstration(session, revision)
+                }
                 if (snapshot.vlmEnabled && VlmEngine.isReady && validRoot(session, windowId) != null) {
                     val image = frames.lastOrNull() ?: ScreenshotCapturer.capture(this@AdSkipperService)?.also(frames::add)
                     if (image == null) lastMissReason = "截图失败，暂未启动大模型"
@@ -370,6 +393,7 @@ class AdSkipperService : AccessibilityService() {
                 }
                 return false
             }
+            demonstrationOverlay?.hide()
             val sampledAt = SystemClock.elapsedRealtime()
             currentCoroutineContext().ensureActive()
             if (revision != settingsRevision || validRoot(session, windowId) == null) return false
@@ -456,6 +480,91 @@ class AdSkipperService : AccessibilityService() {
         }
     }
 
+    private fun showDemonstration(session: SplashSessionTracker.Session, revision: Long) {
+        val shown = demonstrationOverlay?.show(
+            onTouch = { touch -> recordDemonstration(session, revision, touch) },
+            onCancel = {
+                sessions.finish(session)
+                DemonstrationLearning.report(session.packageName, "本轮示范已取消，下次启动继续等待")
+            },
+        ) == true
+        if (shown) {
+            DemonstrationLearning.report(session.packageName, "等待你点跳过；本次没有广告请点提示取消")
+        } else {
+            sessions.finish(session)
+            DemonstrationLearning.report(session.packageName, "示范浮窗未能打开，请检查无障碍服务")
+        }
+    }
+
+    private fun recordDemonstration(session: SplashSessionTracker.Session, revision: Long, touch: DemonstrationTouch) {
+        if (!sessions.isCurrent(session, SystemClock.elapsedRealtime()) || revision != settingsRevision) return
+        sessions.finish(session)
+        pollJob?.cancel()
+        autoLearningJob?.cancel()
+        demonstrationOverlay?.hide()
+        overlay.dismiss()
+        val pkg = session.packageName
+        val started = SystemClock.elapsedRealtime()
+        fun currentRoot(windowId: Int? = null): AccessibilityNodeInfo? {
+            if (revision != settingsRevision || !settings.masterEnabled || !appAllowed(pkg) ||
+                pkg !in settings.demonstrationPackages || LearningController.collecting(pkg) ||
+                SystemClock.elapsedRealtime() - started > 3_000L ||
+                !getSystemService(PowerManager::class.java).isInteractive) return null
+            return rootInActiveWindow?.takeIf { root -> root.refresh() && root.packageName?.toString() == pkg &&
+                (windowId == null || root.windowId == windowId) }
+        }
+        fun report(message: String) {
+            DemonstrationLearning.report(pkg, message)
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        }
+        demonstrationJob?.cancel()
+        demonstrationJob = scope.launch {
+            var before: Bitmap? = null
+            var after: Bitmap? = null
+            try {
+                delay(80) // Remove the touch layer and its prompt before sampling the underlying ad.
+                val root = currentRoot() ?: return@launch
+                val windowId = root.windowId
+                val version = packageManager.getPackageInfo(pkg, 0).longVersionCode
+                val nodes = if (touch.tap) LearnedMatcher.nodes(root) else emptyList()
+                if (touch.tap) before = withTimeoutOrNull(600L) { ScreenshotCapturer.capture(this@AdSkipperService) }
+                if (currentRoot(windowId) == null || SystemClock.elapsedRealtime() - started > 900L) {
+                    report("页面已变化，本次示范已取消")
+                    return@launch
+                }
+                // A failed sample must not swallow the user's demonstrated click or swipe.
+                val completed = if (touch.tap) performClick(touch.x, touch.y)
+                    else performGesture(touch.path, touch.durationMs)
+                val clickedAt = SystemClock.elapsedRealtime()
+                if (!completed) { report("触摸未完成，请重新操作"); return@launch }
+                if (!touch.tap) { report("已转发手势，本轮未学习；下次启动继续等待"); return@launch }
+                val image = before ?: run { report("已转发点击，截图失败未保存规则"); return@launch }
+                val rule = withContext(Dispatchers.Default) {
+                    DemonstrationLearning.propose(pkg, version, image, touch.x, touch.y, nodes)
+                } ?: run { report("已转发点击，按钮特征不足，可用截图框选补充"); return@launch }
+                delay(450)
+                val afterRoot = currentRoot() ?: return@launch
+                after = ScreenshotCapturer.capture(this@AdSkipperService) ?: run {
+                    report("点击后截图失败，未保存规则"); return@launch
+                }
+                val confirmed = withContext(Dispatchers.Default) {
+                    DemonstrationLearning.confirmsExit(rule, after!!, SystemClock.elapsedRealtime() - clickedAt)
+                }
+                if (currentRoot(afterRoot.windowId) == null) return@launch
+                if (!confirmed) { report("点击后未确认页面离开，未保存规则"); return@launch }
+                learnedRules.save(rule)
+                report("已学习跳过位置，下次优先匹配；新位置仍可继续示范")
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                report("本轮示范未保存，请重试")
+            } finally {
+                before?.recycle()
+                after?.recycle()
+            }
+        }
+    }
+
     private fun learnAfterClick(session: SplashSessionTracker.Session, revision: Long, target: SkipTarget,
                                 image: Bitmap, lines: List<OcrLine>?, nodes: List<LearnedNode>,
                                 version: Long, nodeAdEvidence: Boolean) {
@@ -539,10 +648,13 @@ class AdSkipperService : AccessibilityService() {
         }
     }
 
-    private suspend fun performClick(x: Float, y: Float): Boolean = withTimeoutOrNull(1_000L) {
+    private suspend fun performClick(x: Float, y: Float): Boolean = performGesture(
+        Path().apply { moveTo(x, y) }, ViewConfiguration.getTapTimeout().toLong())
+
+    private suspend fun performGesture(path: Path, durationMs: Long): Boolean = withTimeoutOrNull(durationMs + 1_000L) {
         suspendCancellableCoroutine { continuation ->
             val gesture = GestureDescription.Builder().addStroke(
-                GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0, ViewConfiguration.getTapTimeout().toLong()),
+                GestureDescription.StrokeDescription(path, 0, durationMs),
             ).build()
             val callback = object : GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) {

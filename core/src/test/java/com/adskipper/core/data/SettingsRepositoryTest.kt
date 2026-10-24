@@ -71,4 +71,18 @@ class SettingsRepositoryTest {
         reopened.setAppEnabled("com.sina.weibo", false)
         assertTrue(reopened.settings.first().enabledPackages.isEmpty())
     }
+
+    @Test fun demonstrationOptInPersistsIndependentlyAndNeverEnablesAnApp() = runBlocking {
+        val file = File(temp.newFolder(), "settings.preferences_pb")
+        val repo = SettingsRepository(store(file))
+        assertTrue(repo.settings.first().demonstrationPackages.isEmpty())
+        repo.setDemonstrationEnabled("com.sina.weibo", true)
+        repo.setDemonstrationEnabled("com.taobao.taobao", true)
+        assertTrue(repo.settings.first().enabledPackages.isEmpty())
+        scopes.last().coroutineContext[Job]!!.cancelAndJoin()
+        val reopened = SettingsRepository(store(file))
+        assertEquals(setOf("com.sina.weibo", "com.taobao.taobao"), reopened.settings.first().demonstrationPackages)
+        reopened.setDemonstrationEnabled("com.sina.weibo", false)
+        assertEquals(setOf("com.taobao.taobao"), reopened.settings.first().demonstrationPackages)
+    }
 }

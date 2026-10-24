@@ -20,6 +20,7 @@ data class AppSettings(
     val vlmEnabled: Boolean = false,
     val keywords: Set<String> = DEFAULT_KEYWORDS,
     val enabledPackages: Set<String> = emptySet(),
+    val demonstrationPackages: Set<String> = emptySet(),
     val debugOverlay: Boolean = false,
     val selfTest: Boolean = false,
 ) {
@@ -46,6 +47,7 @@ class SettingsRepository(private val dataStore: DataStore<Preferences>) {
             keywords = p[KEY_KEYWORDS] ?: AppSettings.DEFAULT_KEYWORDS,
             // Old exclusion lists never opt apps into the new explicit selection mode.
             enabledPackages = p[KEY_ENABLED_PACKAGES] ?: emptySet(),
+            demonstrationPackages = p[KEY_DEMONSTRATION_PACKAGES] ?: emptySet(),
             debugOverlay = p[KEY_DEBUG] ?: false,
             selfTest = p[KEY_SELF_TEST] ?: false,
         )
@@ -67,6 +69,13 @@ class SettingsRepository(private val dataStore: DataStore<Preferences>) {
         }
     }
 
+    suspend fun setDemonstrationEnabled(packageName: String, enabled: Boolean) {
+        dataStore.edit { p ->
+            val current = p[KEY_DEMONSTRATION_PACKAGES] ?: emptySet()
+            p[KEY_DEMONSTRATION_PACKAGES] = if (enabled) current + packageName else current - packageName
+        }
+    }
+
     private companion object {
         val KEY_MASTER = booleanPreferencesKey("master_enabled")
         val KEY_L1 = booleanPreferencesKey("layer1_enabled")
@@ -75,6 +84,7 @@ class SettingsRepository(private val dataStore: DataStore<Preferences>) {
         val KEY_VLM = booleanPreferencesKey("vlm_enabled")
         val KEY_KEYWORDS = stringSetPreferencesKey("keywords")
         val KEY_ENABLED_PACKAGES = stringSetPreferencesKey("enabled_packages")
+        val KEY_DEMONSTRATION_PACKAGES = stringSetPreferencesKey("demonstration_packages")
         val KEY_DEBUG = booleanPreferencesKey("debug_overlay")
         val KEY_SELF_TEST = booleanPreferencesKey("self_test")
     }

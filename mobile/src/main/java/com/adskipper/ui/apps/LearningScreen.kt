@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -45,6 +46,7 @@ import com.adskipper.AdSkipperApp
 import com.adskipper.core.data.AppSettings
 import com.adskipper.core.learn.LearnedRuleRepository
 import com.adskipper.core.learn.LearningController
+import com.adskipper.core.learn.DemonstrationLearning
 import com.adskipper.core.service.AdSkipperService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -64,6 +66,7 @@ fun LearningScreen(packageName: String, onBack: () -> Unit, onModels: () -> Unit
     val repo = remember { LearnedRuleRepository.get(context) }
     val rules by repo.rules.collectAsState()
     val state by LearningController.state.collectAsState()
+    val demonstration by DemonstrationLearning.status.collectAsState()
     val current = state.takeIf { it.packageName == packageName }
     val model by app.modelManager.status.collectAsState()
     val info by produceState<Pair<String, Long>?>(null, packageName) {
@@ -82,8 +85,22 @@ fun LearningScreen(packageName: String, onBack: () -> Unit, onModels: () -> Unit
         TextButton(onClick = onBack) { Text("返回应用列表") }
         Text("学习跳过按钮", style = MaterialTheme.typography.headlineMedium)
         Text(info?.first ?: packageName)
-        Text("已开启的应用会自动学习核验成功的文字跳过按钮。下次启动优先匹配已保存规则，无需手动采集。")
-        if (!settings.layer2Enabled) Text("图片文字识别已关闭，后台自动学习暂停；手动采集仍可使用。")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically) {
+            Text("持续手动示范学习", Modifier.weight(1f))
+            Switch(checked = packageName in settings.demonstrationPackages,
+                enabled = (connected && enabled) || packageName in settings.demonstrationPackages,
+                onCheckedChange = { value -> scope.launch {
+                    app.settingsRepo.setDemonstrationEnabled(packageName, value)
+                } })
+        }
+        Text("开启后，每次启动先匹配旧规则；未命中时显示示范提示。直接点广告上的跳过，程序转发这次点按，核验后自动保存。换位置或样式可继续示范，无需 OCR、大模型或逐次采集保存。")
+        Text("示范只在启动后的 8 秒内等待。没有广告时请点提示取消，避免把正常操作学进去。示范点按会短暂等待截图；滑动只转发、不学习，多指操作会取消本轮。")
+        if (demonstration.packageName == packageName && demonstration.message.isNotBlank()) Text(demonstration.message)
+        if (packageName !in settings.demonstrationPackages) {
+            Text("未开启示范学习时，继续普通识别，并自动学习核验成功的文字跳过按钮。")
+            if (!settings.layer2Enabled) Text("图片文字识别已关闭，文字按钮自动学习暂停；示范学习和手动采集仍可使用。")
+        }
         Text("未学会的广告可在这里手动补充：开启采集后，打开目标应用，在广告出现时点“采集当前广告”，再返回分析并确认。")
         Text("学习只在本机进行。保存按钮特征和控件描述；完整截图在保存、放弃或进程重启时删除。")
         if (!connected) Text("请先开启无障碍服务")
@@ -158,7 +175,7 @@ fun LearningScreen(packageName: String, onBack: () -> Unit, onModels: () -> Unit
                 TextButton(onClick = { LearningController.discard() }, enabled = !saving) { Text("放弃本次学习") }
         }
         Text("已保存规则", style = MaterialTheme.typography.titleLarge)
-        Text("每个应用保留最近 8 个样式。下次启动优先匹配；版本、尺寸或画面不匹配时继续普通识别。")
+        Text("每个应用保留最近 8 个位置和样式，重复样式更新。版本、尺寸或画面不匹配时，按此应用的模式继续示范或普通识别。")
         repo.error?.let { Text(it) }
         if (notice.isNotBlank()) Text(notice)
         val saved = rules.filter { it.packageName == packageName }

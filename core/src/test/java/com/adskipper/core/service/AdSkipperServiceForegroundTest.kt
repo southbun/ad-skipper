@@ -135,6 +135,32 @@ class AdSkipperServiceForegroundTest {
         assertNotNull(ReflectionHelpers.getField<Long?>(service, "pollingId"))
     }
 
+    @Test fun demonstrationStartsWithAllRecognitionLayersDisabledAndCanRunOnAnotherLaunch() {
+        ReflectionHelpers.setField(service, "settings", AppSettings(enabledPackages = setOf(app),
+            demonstrationPackages = setOf(app), layer1Enabled = false, layer2Enabled = false, layer3Enabled = false))
+        send(app, app)
+        val first = current()!!
+        assertNotNull(ReflectionHelpers.getField<Long?>(service, "pollingId"))
+        sessions.finish(first)
+        send(home, home)
+        send(app, app)
+        assertNotEquals(first.id, current()!!.id)
+    }
+
+    @Test fun leavingOrDisablingAnAppCancelsPendingDemonstration() {
+        send(app, app)
+        val learning = Job()
+        ReflectionHelpers.setField(service, "demonstrationJob", learning)
+        send(home, home)
+        assertTrue(learning.isCancelled)
+        send(app, app)
+        val next = Job()
+        ReflectionHelpers.setField(service, "demonstrationJob", next)
+        ReflectionHelpers.setField(service, "settings", AppSettings())
+        send(app, app)
+        assertTrue(next.isCancelled)
+    }
+
     @Test fun leavingForAnUnreadableUnselectedAppEndsTheSession() {
         send(app, app)
         val first = current()!!
